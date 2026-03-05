@@ -29,6 +29,6 @@ pub(crate) use manifest::plugin_manifest_paths;
 pub use marketplace::MarketplaceError;
 pub use marketplace::MarketplacePluginSourceSummary;
 pub(crate) use render::render_explicit_plugin_instructions;
-pub(crate) use render::render_plugins_section;
+pub(crate) use render::render_plugin_instructions;
 pub use store::PluginId;
 pub use store::PluginInstallResult;
