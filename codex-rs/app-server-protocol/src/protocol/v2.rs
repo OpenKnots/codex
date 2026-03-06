@@ -2127,6 +2127,8 @@ pub struct ThreadStartParams {
     pub service_name: Option<String>,
     #[ts(optional = nullable)]
     pub base_instructions: Option<String>,
+    /// Custom developer override for this thread session.
+    /// Takes precedence over `~/.codex/config.toml` `developer_instructions`.
     #[ts(optional = nullable)]
     pub developer_instructions: Option<String>,
     #[ts(optional = nullable)]
@@ -2198,6 +2200,10 @@ pub struct ThreadStartResponse {
 /// If using history or path, the thread_id param will be ignored.
 ///
 /// Prefer using thread_id whenever possible.
+///
+/// When resuming a thread that is already loaded/running, override fields are
+/// ignored and reported as mismatch warnings rather than being reapplied
+/// mid-session.
 pub struct ThreadResumeParams {
     pub thread_id: String,
 
@@ -2237,6 +2243,8 @@ pub struct ThreadResumeParams {
     pub config: Option<HashMap<String, serde_json::Value>>,
     #[ts(optional = nullable)]
     pub base_instructions: Option<String>,
+    /// Custom developer override for this thread session.
+    /// Takes precedence over `~/.codex/config.toml` `developer_instructions`.
     #[ts(optional = nullable)]
     pub developer_instructions: Option<String>,
     #[ts(optional = nullable)]
@@ -2306,6 +2314,8 @@ pub struct ThreadForkParams {
     pub config: Option<HashMap<String, serde_json::Value>>,
     #[ts(optional = nullable)]
     pub base_instructions: Option<String>,
+    /// Custom developer override for this thread session.
+    /// Takes precedence over `~/.codex/config.toml` `developer_instructions`.
     #[ts(optional = nullable)]
     pub developer_instructions: Option<String>,
     /// If true, persist additional rollout EventMsg variants required to
