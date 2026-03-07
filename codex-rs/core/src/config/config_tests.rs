@@ -156,6 +156,48 @@ consolidation_model = "gpt-5"
 }
 
 #[test]
+fn config_toml_deserializes_custom_models() {
+    let custom_models = r#"
+[[custom_models]]
+name = "gpt-5.4 1m"
+model = "gpt-5.4"
+model_context_window = 1000000
+model_auto_compact_token_limit = 900000
+"#;
+    let custom_models_cfg = toml::from_str::<ConfigToml>(custom_models)
+        .expect("TOML deserialization should succeed for custom models");
+
+    assert_eq!(
+        custom_models_cfg.custom_models,
+        vec![CustomModelToml {
+            name: "gpt-5.4 1m".to_string(),
+            model: "gpt-5.4".to_string(),
+            model_context_window: Some(1_000_000),
+            model_auto_compact_token_limit: Some(900_000),
+        }]
+    );
+
+    let config = Config::load_from_base_config_with_overrides(
+        custom_models_cfg,
+        ConfigOverrides::default(),
+        tempdir().expect("tempdir").path().to_path_buf(),
+    )
+    .expect("load config from custom models settings");
+
+    assert_eq!(
+        config.custom_models,
+        HashMap::from([(
+            "gpt-5.4 1m".to_string(),
+            CustomModelConfig {
+                model: "gpt-5.4".to_string(),
+                model_context_window: Some(1_000_000),
+                model_auto_compact_token_limit: Some(900_000),
+            },
+        )])
+    );
+}
+
+#[test]
 fn config_toml_deserializes_model_availability_nux() {
     let toml = r#"
 [tui.model_availability_nux]
