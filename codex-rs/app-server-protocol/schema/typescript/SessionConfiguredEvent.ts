@@ -53,6 +53,7 @@ initial_messages: Array<EventMsg> | null,
  */
 network_proxy?: SessionNetworkProxyRuntime, 
 /**
- * Path in which the rollout is stored. Can be `None` for ephemeral threads.
+ * Path in which the rollout is stored. Fresh persistent threads may reserve this path
+ * before the rollout file is materialized on disk. Can be `None` for ephemeral threads.
  */
 rollout_path: string | null, };
