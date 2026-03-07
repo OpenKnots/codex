@@ -700,6 +700,8 @@ impl RolloutStore {
     /// Ensure all queued rollout writes have been persisted to disk.
     pub async fn persist(&self) -> std::io::Result<()> {
         let (tx, rx) = oneshot::channel();
+        // Control commands share the same ordering barrier as `record_items` so the writer sees
+        // them after any earlier in-memory source updates have been queued.
         let queue_order_guard = self.queue_order.lock().await;
         self.tx
             .send(RolloutCmd::Persist { ack: tx })
@@ -713,6 +715,8 @@ impl RolloutStore {
     /// Flush all queued writes and wait until they are committed by the writer task.
     pub async fn flush(&self) -> std::io::Result<()> {
         let (tx, rx) = oneshot::channel();
+        // `Flush` also participates in the ordering barrier so the writer drains any earlier
+        // `record_items` updates before acknowledging the flush.
         let queue_order_guard = self.queue_order.lock().await;
         self.tx
             .send(RolloutCmd::Flush { ack: tx })
@@ -810,6 +814,8 @@ impl RolloutStore {
     /// Shut down the background writer after draining all previously queued work.
     pub async fn shutdown(&self) -> std::io::Result<()> {
         let (tx_done, rx_done) = oneshot::channel();
+        // `Shutdown` uses the same barrier so the writer observes it after any earlier in-memory
+        // source updates and queued control commands.
         let queue_order_guard = self.queue_order.lock().await;
         match self.tx.send(RolloutCmd::Shutdown { ack: tx_done }).await {
             Ok(_) => {}

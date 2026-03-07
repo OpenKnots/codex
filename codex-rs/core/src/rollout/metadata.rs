@@ -100,20 +100,18 @@ pub(crate) async fn extract_metadata_from_rollout(
     let parse_errors = loaded_rollout.parse_errors;
     let source = loaded_rollout.source;
     let rollout_start = source.inclusive_start_of_rollout_index();
-    let has_any_parsed_items = source.iter_forward_from(rollout_start).next().is_some();
+    let rollout_items = source
+        .iter_forward_from(rollout_start)
+        .map(|(_, item)| item)
+        .collect::<Vec<_>>();
+    let has_any_parsed_items = !rollout_items.is_empty();
     if parse_errors > 0 && !has_any_parsed_items {
         anyhow::bail!(
             "rollout contains parse errors and no readable items: {}",
             rollout_path.display()
         );
     }
-    let builder = builder_from_items(
-        source
-            .iter_forward_from(rollout_start)
-            .map(|(_, item)| item),
-        rollout_path,
-    )
-    .ok_or_else(|| {
+    let builder = builder_from_items(rollout_items, rollout_path).ok_or_else(|| {
         anyhow::anyhow!(
             "rollout missing metadata builder: {}",
             rollout_path.display()
