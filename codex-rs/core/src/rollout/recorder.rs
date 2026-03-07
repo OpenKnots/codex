@@ -201,6 +201,10 @@ pub struct RolloutStore {
     pub(crate) rollout_path: PathBuf,
     state_db: Option<StateDbHandle>,
     event_persistence_mode: EventPersistenceMode,
+    // Serialize queue sends with in-memory source updates so rollout command order and the
+    // process-local `RolloutSource` stay aligned without awaiting channel capacity while holding
+    // the source mutex.
+    queue_order: Arc<Mutex<()>>,
     // Canonical in-memory `RolloutSource` for this process. Startup loading and runtime writes
     // both update this source so replay sees the same rollout items and session metadata that the
     // writer is responsible for persisting.
@@ -629,6 +633,7 @@ impl RolloutStore {
         let (tx, rx) = mpsc::channel::<RolloutCmd>(256);
 
         let source = Arc::new(Mutex::new(source));
+        let queue_order = Arc::new(Mutex::new(()));
         // Spawn a Tokio task that owns the file handle and performs async
         // writes. Using `tokio::fs::File` keeps everything on the async I/O
         // driver instead of blocking the runtime.
@@ -650,6 +655,7 @@ impl RolloutStore {
             rollout_path,
             state_db: state_db_ctx,
             event_persistence_mode,
+            queue_order,
             source,
         })
     }
@@ -680,22 +686,26 @@ impl RolloutStore {
         if filtered.is_empty() {
             return Ok(());
         }
-        let mut source = self.source.lock().await;
-        self.tx
-            .send(RolloutCmd::AddItems(filtered.clone()))
-            .await
-            .map_err(|e| IoError::other(format!("failed to queue rollout items: {e}")))?;
-        source.append_items(filtered);
+        let queue_order_guard = self.queue_order.lock().await;
+        let permit =
+            self.tx.reserve().await.map_err(|e| {
+                IoError::other(format!("failed to reserve rollout queue slot: {e}"))
+            })?;
+        self.source.lock().await.append_items(filtered.clone());
+        permit.send(RolloutCmd::AddItems(filtered));
+        drop(queue_order_guard);
         Ok(())
     }
 
     /// Ensure all queued rollout writes have been persisted to disk.
     pub async fn persist(&self) -> std::io::Result<()> {
         let (tx, rx) = oneshot::channel();
+        let queue_order_guard = self.queue_order.lock().await;
         self.tx
             .send(RolloutCmd::Persist { ack: tx })
             .await
             .map_err(|e| IoError::other(format!("failed to queue rollout persist: {e}")))?;
+        drop(queue_order_guard);
         rx.await
             .map_err(|e| IoError::other(format!("failed waiting for rollout persist: {e}")))
     }
@@ -703,10 +713,12 @@ impl RolloutStore {
     /// Flush all queued writes and wait until they are committed by the writer task.
     pub async fn flush(&self) -> std::io::Result<()> {
         let (tx, rx) = oneshot::channel();
+        let queue_order_guard = self.queue_order.lock().await;
         self.tx
             .send(RolloutCmd::Flush { ack: tx })
             .await
             .map_err(|e| IoError::other(format!("failed to queue rollout flush: {e}")))?;
+        drop(queue_order_guard);
         rx.await
             .map_err(|e| IoError::other(format!("failed waiting for rollout flush: {e}")))
     }
@@ -798,17 +810,20 @@ impl RolloutStore {
     /// Shut down the background writer after draining all previously queued work.
     pub async fn shutdown(&self) -> std::io::Result<()> {
         let (tx_done, rx_done) = oneshot::channel();
+        let queue_order_guard = self.queue_order.lock().await;
         match self.tx.send(RolloutCmd::Shutdown { ack: tx_done }).await {
-            Ok(_) => rx_done
-                .await
-                .map_err(|e| IoError::other(format!("failed waiting for rollout shutdown: {e}")))?,
+            Ok(_) => {}
             Err(e) => {
                 warn!("failed to send rollout shutdown command: {e}");
                 return Err(IoError::other(format!(
                     "failed to send rollout shutdown command: {e}"
                 )));
             }
-        };
+        }
+        drop(queue_order_guard);
+        rx_done
+            .await
+            .map_err(|e| IoError::other(format!("failed waiting for rollout shutdown: {e}")))?;
         Ok(())
     }
 }
