@@ -153,6 +153,7 @@ pub(crate) struct HandleOutputCtx {
     pub turn_context: Arc<TurnContext>,
     pub tool_runtime: ToolCallRuntime,
     pub cancellation_token: CancellationToken,
+    pub history_before_turn: Arc<Vec<ResponseItem>>,
 }
 
 #[instrument(level = "trace", skip_all)]
@@ -186,7 +187,11 @@ pub(crate) async fn handle_output_item_done(
             "processing streamed server-side compaction item"
         );
         ctx.sess
-            .apply_server_side_compaction_checkpoint(ctx.turn_context.as_ref(), item)
+            .apply_server_side_compaction_checkpoint(
+                ctx.turn_context.as_ref(),
+                item,
+                ctx.history_before_turn.as_slice(),
+            )
             .await;
         ctx.sess
             .emit_turn_item_completed(

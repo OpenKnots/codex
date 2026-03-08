@@ -476,6 +476,82 @@ async fn auto_server_side_compaction_uses_inline_context_management() -> Result<
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn auto_server_side_compaction_keeps_current_turn_inputs_for_follow_ups() -> Result<()> {
+    skip_if_no_network!(Ok(()));
+
+    let compact_threshold = 120;
+    let first_turn_text = "inline compact turn one";
+    let second_turn_text = "inline compact turn two";
+    let inline_summary = summary_with_prefix("INLINE_SERVER_SUMMARY");
+
+    let harness = TestCodexHarness::with_builder(
+        test_codex()
+            .with_auth(CodexAuth::create_dummy_chatgpt_auth_for_testing())
+            .with_config(move |config| {
+                config
+                    .features
+                    .enable(Feature::ServerSideCompaction)
+                    .expect("enable server-side compaction");
+                config.model_auto_compact_token_limit = Some(compact_threshold);
+            }),
+    )
+    .await?;
+    let codex = harness.test().codex.clone();
+
+    let responses_mock = responses::mount_sse_sequence(
+        harness.server(),
+        vec![
+            responses::sse(vec![
+                responses::ev_assistant_message("m1", "FIRST_REMOTE_REPLY"),
+                responses::ev_completed_with_tokens("resp-1", 500),
+            ]),
+            responses::sse(vec![
+                responses::ev_compaction(&inline_summary),
+                responses::ev_function_call("call-inline-mid-turn", DUMMY_FUNCTION_NAME, "{}"),
+                responses::ev_completed_with_tokens("resp-2", 80),
+            ]),
+            responses::sse(vec![
+                responses::ev_assistant_message("m3", "AFTER_INLINE_TOOL_REPLY"),
+                responses::ev_completed("resp-3"),
+            ]),
+        ],
+    )
+    .await;
+
+    submit_text_turn_and_wait(&codex, first_turn_text).await?;
+    submit_text_turn_and_wait(&codex, second_turn_text).await?;
+
+    let requests = responses_mock.requests();
+    assert_eq!(
+        requests.len(),
+        3,
+        "expected initial request, inline-compacted tool call, and same-turn follow-up"
+    );
+
+    let follow_up_request = &requests[2];
+    assert!(
+        follow_up_request.body_contains_text(&inline_summary),
+        "expected same-turn follow-up to include the inline compaction item"
+    );
+    assert!(
+        follow_up_request.body_contains_text(second_turn_text),
+        "expected same-turn follow-up to retain the current turn user input"
+    );
+    assert!(
+        !follow_up_request.body_contains_text(first_turn_text),
+        "expected same-turn follow-up to drop pre-compaction history"
+    );
+    assert!(
+        follow_up_request
+            .function_call_output_text("call-inline-mid-turn")
+            .is_some(),
+        "expected same-turn follow-up to include the tool output"
+    );
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn auto_server_side_compaction_uses_legacy_remote_path_with_custom_prompt() -> Result<()> {
     skip_if_no_network!(Ok(()));
 
@@ -569,25 +645,33 @@ async fn auto_server_side_compaction_downgrades_known_compat_errors_once() -> Re
             })),
             responses::sse_response(sse(vec![
                 responses::ev_assistant_message("m2", "AFTER_DOWNGRADE_REPLY"),
-                responses::ev_completed("resp-2"),
+                responses::ev_completed_with_tokens("resp-2", 500),
+            ])),
+            responses::sse_response(sse(vec![
+                responses::ev_assistant_message("m3", "AFTER_COMPAT_SKIP_REPLY"),
+                responses::ev_completed("resp-3"),
             ])),
         ],
     )
     .await;
-    let compact_mock = responses::mount_compact_user_history_with_summary_once(
+    let compact_mock = responses::mount_compact_user_history_with_summary_sequence(
         harness.server(),
-        "DOWNGRADE_REMOTE_SUMMARY",
+        vec![
+            "DOWNGRADE_REMOTE_SUMMARY".to_string(),
+            "POST_DOWNGRADE_REMOTE_SUMMARY".to_string(),
+        ],
     )
     .await;
 
     submit_text_turn_and_wait(&codex, "downgrade turn one").await?;
     submit_text_turn_and_wait(&codex, "downgrade turn two").await?;
+    submit_text_turn_and_wait(&codex, "downgrade turn three").await?;
 
     let requests = responses_mock.requests();
     assert_eq!(
         requests.len(),
-        3,
-        "expected initial turn, failed inline attempt, and downgraded follow-up request"
+        4,
+        "expected the initial turn, one failed inline attempt, one downgraded retry, and a later direct legacy request"
     );
 
     let inline_attempt = requests[1].body_json();
@@ -608,10 +692,18 @@ async fn auto_server_side_compaction_downgrades_known_compat_errors_once() -> Re
         requests[2].body_contains_text("DOWNGRADE_REMOTE_SUMMARY"),
         "downgraded retry should reuse the client-side compaction output"
     );
+    assert!(
+        requests[3].body_json().get("context_management").is_none(),
+        "future auto-compaction requests should skip inline compaction after a known compat error"
+    );
+    assert!(
+        requests[3].body_contains_text("POST_DOWNGRADE_REMOTE_SUMMARY"),
+        "future auto-compaction requests should go straight to the legacy compaction output"
+    );
     assert_eq!(
         compact_mock.requests().len(),
-        1,
-        "expected one legacy remote compact request after the compat error"
+        2,
+        "expected later auto-compactions to use the legacy path directly after the compat error"
     );
 
     Ok(())

@@ -252,6 +252,45 @@ fn collect_new_ghost_snapshots_since_returns_only_snapshots_added_after_turn_sta
     assert_eq!(new_snapshots, vec![same_turn_snapshot]);
 }
 
+#[test]
+fn build_server_side_compaction_replacement_history_keeps_current_turn_inputs() {
+    let prior_snapshot = ghost_snapshot("ghost-before");
+    let same_turn_snapshot = ghost_snapshot("ghost-during");
+    let history_before_turn = vec![user_message("earlier"), prior_snapshot.clone()];
+    let current_turn_user = user_message("current turn");
+    let current_turn_tool_output = ResponseItem::FunctionCallOutput {
+        call_id: "call-1".to_string(),
+        output: FunctionCallOutputPayload::from_text("tool result".to_string()),
+    };
+    let current_history = vec![
+        user_message("earlier"),
+        prior_snapshot.clone(),
+        current_turn_user.clone(),
+        current_turn_tool_output.clone(),
+        same_turn_snapshot.clone(),
+    ];
+    let compaction_item = ResponseItem::Compaction {
+        encrypted_content: "INLINE_SUMMARY".to_string(),
+    };
+
+    let replacement_history = build_server_side_compaction_replacement_history(
+        compaction_item.clone(),
+        &history_before_turn,
+        &current_history,
+    );
+
+    assert_eq!(
+        replacement_history,
+        vec![
+            compaction_item,
+            current_turn_user,
+            current_turn_tool_output,
+            prior_snapshot,
+            same_turn_snapshot,
+        ]
+    );
+}
+
 fn make_mcp_tool(
     server_name: &str,
     tool_name: &str,
@@ -2262,6 +2301,7 @@ pub(crate) async fn make_session_and_context() -> (Session, TurnContext) {
         active_turn: Mutex::new(None),
         services,
         js_repl,
+        inline_server_side_compaction_incompatible: std::sync::atomic::AtomicBool::new(false),
         next_internal_sub_id: AtomicU64::new(0),
     };
 
@@ -2814,6 +2854,7 @@ pub(crate) async fn make_session_and_context_with_dynamic_tools_and_rx(
         active_turn: Mutex::new(None),
         services,
         js_repl,
+        inline_server_side_compaction_incompatible: std::sync::atomic::AtomicBool::new(false),
         next_internal_sub_id: AtomicU64::new(0),
     });
 

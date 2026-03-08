@@ -4,7 +4,9 @@ use std::fmt::Debug;
 use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
 use std::sync::atomic::AtomicU64;
+use std::sync::atomic::Ordering;
 
 use crate::AuthManager;
 use crate::CodexAuth;
@@ -656,6 +658,7 @@ pub(crate) struct Session {
     pub(crate) active_turn: Mutex<Option<ActiveTurn>>,
     pub(crate) services: SessionServices,
     js_repl: Arc<JsReplHandle>,
+    inline_server_side_compaction_incompatible: AtomicBool,
     next_internal_sub_id: AtomicU64,
 }
 
@@ -1621,6 +1624,7 @@ impl Session {
             active_turn: Mutex::new(None),
             services,
             js_repl,
+            inline_server_side_compaction_incompatible: AtomicBool::new(false),
             next_internal_sub_id: AtomicU64::new(0),
         });
         if let Some(network_policy_decider_session) = network_policy_decider_session {
@@ -3181,20 +3185,14 @@ impl Session {
         &self,
         turn_context: &TurnContext,
         item: ResponseItem,
+        history_before_turn: &[ResponseItem],
     ) {
-        let ghost_snapshots = self
-            .clone_history()
-            .await
-            .raw_items()
-            .iter()
-            .filter(|history_item| matches!(history_item, ResponseItem::GhostSnapshot { .. }))
-            .cloned()
-            .collect::<Vec<_>>();
-
-        let mut replacement_history = vec![item.clone()];
-        if !ghost_snapshots.is_empty() {
-            replacement_history.extend(ghost_snapshots);
-        }
+        let current_history = self.clone_history().await;
+        let replacement_history = build_server_side_compaction_replacement_history(
+            item.clone(),
+            history_before_turn,
+            current_history.raw_items(),
+        );
 
         let reference_context_item = Some(turn_context.to_turn_context_item());
         let compacted_item = CompactedItem {
@@ -3316,6 +3314,18 @@ impl Session {
 
     pub(crate) fn features(&self) -> ManagedFeatures {
         self.features.clone()
+    }
+
+    fn inline_server_side_compaction_supported(&self) -> bool {
+        !self
+            .inline_server_side_compaction_incompatible
+            .load(Ordering::Relaxed)
+    }
+
+    fn disable_inline_server_side_compaction(&self) -> bool {
+        !self
+            .inline_server_side_compaction_incompatible
+            .swap(true, Ordering::Relaxed)
     }
 
     pub(crate) async fn collaboration_mode(&self) -> CollaborationMode {
@@ -5584,6 +5594,7 @@ pub(crate) async fn run_turn(
             &mut client_session,
             turn_metadata_header.as_deref(),
             sampling_request_input,
+            &preturn_inline_compaction_state.history_before_turn,
             inline_compaction_for_request.map(|pending| pending.threshold),
             &turn_enabled_connectors,
             skills_outcome,
@@ -5827,6 +5838,29 @@ fn collect_new_ghost_snapshots_since(
         .collect()
 }
 
+fn build_server_side_compaction_replacement_history(
+    compaction_item: ResponseItem,
+    history_before_turn: &[ResponseItem],
+    current_history: &[ResponseItem],
+) -> Vec<ResponseItem> {
+    let mut replacement_history = vec![compaction_item];
+    replacement_history.extend(
+        current_history
+            .strip_prefix(history_before_turn)
+            .unwrap_or(current_history)
+            .iter()
+            .filter(|item| !matches!(item, ResponseItem::GhostSnapshot { .. }))
+            .cloned(),
+    );
+    replacement_history.extend(
+        current_history
+            .iter()
+            .filter(|item| matches!(item, ResponseItem::GhostSnapshot { .. }))
+            .cloned(),
+    );
+    replacement_history
+}
+
 fn record_compaction_metric(
     sess: &Session,
     mode: &'static str,
@@ -5875,6 +5909,9 @@ fn inline_server_side_compaction_threshold(
     if !sess.enabled(Feature::ServerSideCompaction) {
         return None;
     }
+    if !sess.inline_server_side_compaction_supported() {
+        return None;
+    }
     if !should_use_remote_compact_task(&turn_context.provider) {
         return None;
     }
@@ -5891,6 +5928,8 @@ fn record_inline_compaction_skip(
 ) {
     let reason = if !sess.enabled(Feature::ServerSideCompaction) {
         "flag_off"
+    } else if !sess.inline_server_side_compaction_supported() {
+        "backend_incompatible"
     } else if !should_use_remote_compact_task(&turn_context.provider) {
         "non_openai"
     } else if has_custom_compact_prompt(turn_context) {
@@ -5937,6 +5976,14 @@ async fn downgrade_known_inline_compaction_error(
 ) -> CodexResult<bool> {
     if !is_inline_compaction_compat_error(err) {
         return Ok(false);
+    }
+
+    if sess.disable_inline_server_side_compaction() {
+        tracing::warn!(
+            turn_id = %turn_context.sub_id,
+            trigger = pending_compaction.trigger.as_str(),
+            "disabling inline server-side compaction for this session after compatibility failure"
+        );
     }
 
     tracing::warn!(
@@ -6345,6 +6392,7 @@ async fn run_sampling_request(
     client_session: &mut ModelClientSession,
     turn_metadata_header: Option<&str>,
     input: Vec<ResponseItem>,
+    history_before_turn: &[ResponseItem],
     inline_compaction_threshold: Option<i64>,
     explicitly_enabled_connectors: &HashSet<String>,
     skills_outcome: Option<&SkillLoadOutcome>,
@@ -6381,6 +6429,7 @@ async fn run_sampling_request(
             Arc::clone(&turn_diff_tracker),
             server_model_warning_emitted_for_turn,
             &prompt,
+            history_before_turn,
             cancellation_token.child_token(),
         )
         .await
@@ -7103,6 +7152,7 @@ async fn try_run_sampling_request(
     turn_diff_tracker: SharedTurnDiffTracker,
     server_model_warning_emitted_for_turn: &mut bool,
     prompt: &Prompt,
+    history_before_turn: &[ResponseItem],
     cancellation_token: CancellationToken,
 ) -> CodexResult<SamplingRequestResult> {
     feedback_tags!(
@@ -7143,6 +7193,7 @@ async fn try_run_sampling_request(
     let plan_mode = turn_context.collaboration_mode.mode == ModeKind::Plan;
     let mut assistant_message_stream_parsers = AssistantMessageStreamParsers::new(plan_mode);
     let mut plan_mode_state = plan_mode.then(|| PlanModeStreamState::new(&turn_context.sub_id));
+    let history_before_turn = Arc::new(history_before_turn.to_vec());
     let receiving_span = trace_span!("receiving_stream");
     let outcome: CodexResult<SamplingRequestResult> = loop {
         let handle_responses = trace_span!(
@@ -7215,6 +7266,7 @@ async fn try_run_sampling_request(
                     turn_context: turn_context.clone(),
                     tool_runtime: tool_runtime.clone(),
                     cancellation_token: cancellation_token.child_token(),
+                    history_before_turn: history_before_turn.clone(),
                 };
 
                 let output_result = handle_output_item_done(&mut ctx, item, previously_active_item)
