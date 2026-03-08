@@ -4345,7 +4345,8 @@ mod handlers {
                 format!("{sub_id}-retry-{attempts}")
             };
             let current_context = sess.new_default_turn_with_sub_id(turn_sub_id).await;
-            current_context.otel_manager.user_prompt(&turn_input);
+            // Keep injected inbox wakeups visible to telemetry after the TurnContext field rename.
+            current_context.session_telemetry.user_prompt(&turn_input);
 
             sess.refresh_mcp_servers_if_requested(&current_context)
                 .await;
