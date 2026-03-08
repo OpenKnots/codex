@@ -5813,6 +5813,20 @@ struct PreTurnInlineCompactionState {
     turn_context_item: TurnContextItem,
 }
 
+fn collect_new_ghost_snapshots_since(
+    history_before_turn: &[ResponseItem],
+    current_history: &[ResponseItem],
+) -> Vec<ResponseItem> {
+    current_history
+        .iter()
+        .filter(|item| {
+            matches!(item, ResponseItem::GhostSnapshot { .. })
+                && !history_before_turn.contains(item)
+        })
+        .cloned()
+        .collect()
+}
+
 fn record_compaction_metric(
     sess: &Session,
     mode: &'static str,
@@ -5950,8 +5964,17 @@ async fn downgrade_known_inline_compaction_error(
             let Some(preturn_state) = preturn_state else {
                 return Ok(false);
             };
+            // Preserve same-turn ghost snapshots that may have completed after
+            // the pre-turn baseline was captured so `/undo` still works after
+            // we downgrade to the legacy compaction path.
+            let current_history = sess.clone_history().await;
+            let mut restored_history = preturn_state.history_before_turn.clone();
+            restored_history.extend(collect_new_ghost_snapshots_since(
+                &preturn_state.history_before_turn,
+                current_history.raw_items(),
+            ));
             sess.replace_history(
-                preturn_state.history_before_turn.clone(),
+                restored_history,
                 preturn_state.reference_context_before_turn.clone(),
             )
             .await;

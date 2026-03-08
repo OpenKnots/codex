@@ -55,6 +55,7 @@ use crate::tools::registry::ToolHandler;
 use crate::tools::router::ToolCallSource;
 use crate::turn_diff_tracker::TurnDiffTracker;
 use codex_app_server_protocol::AppInfo;
+use codex_git::GhostCommit;
 use codex_otel::TelemetryAuthMode;
 use codex_protocol::models::BaseInstructions;
 use codex_protocol::models::ContentItem;
@@ -127,6 +128,12 @@ fn skill_message(text: &str) -> ResponseItem {
         }],
         end_turn: None,
         phase: None,
+    }
+}
+
+fn ghost_snapshot(id: &str) -> ResponseItem {
+    ResponseItem::GhostSnapshot {
+        ghost_commit: GhostCommit::new(id.to_string(), None, Vec::new(), Vec::new()),
     }
 }
 
@@ -225,6 +232,24 @@ fn assistant_message_stream_parsers_seed_plan_parser_across_added_and_delta_boun
     );
     assert_eq!(tail.visible_text, "");
     assert!(tail.plan_segments.is_empty());
+}
+
+#[test]
+fn collect_new_ghost_snapshots_since_returns_only_snapshots_added_after_turn_start() {
+    let prior_snapshot = ghost_snapshot("ghost-before");
+    let same_turn_snapshot = ghost_snapshot("ghost-during");
+    let history_before_turn = vec![user_message("earlier"), prior_snapshot.clone()];
+    let current_history = vec![
+        user_message("earlier"),
+        prior_snapshot,
+        user_message("current turn"),
+        assistant_message("in progress"),
+        same_turn_snapshot.clone(),
+    ];
+
+    let new_snapshots = collect_new_ghost_snapshots_since(&history_before_turn, &current_history);
+
+    assert_eq!(new_snapshots, vec![same_turn_snapshot]);
 }
 
 fn make_mcp_tool(
