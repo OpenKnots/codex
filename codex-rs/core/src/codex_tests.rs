@@ -351,7 +351,7 @@ async fn downgrade_known_inline_compaction_error_restores_current_turn_when_fall
     turn_context.provider = provider.clone();
     session.services.model_client = ModelClient::new(
         Some(Arc::clone(&session.services.auth_manager)),
-        session.conversation_id.clone(),
+        session.conversation_id,
         provider,
         turn_context.session_source.clone(),
         turn_context.config.model_verbosity,
