@@ -820,6 +820,11 @@ impl AgentControl {
     }
 
     #[cfg(test)]
+    pub(crate) async fn force_watchdog_due_for_tests(&self, target_thread_id: ThreadId) {
+        self.watchdogs.force_due_for_tests(target_thread_id).await;
+    }
+
+    #[cfg(test)]
     pub(crate) async fn set_watchdog_active_helper_for_tests(
         &self,
         target_thread_id: ThreadId,

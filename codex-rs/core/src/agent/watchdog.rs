@@ -484,6 +484,14 @@ impl WatchdogManager {
     }
 
     #[cfg(test)]
+    pub(crate) async fn force_due_for_tests(&self, target_thread_id: ThreadId) {
+        let mut registrations = self.registrations.lock().await;
+        if let Some(entry) = registrations.get_mut(&target_thread_id) {
+            entry.force_due_once = true;
+        }
+    }
+
+    #[cfg(test)]
     #[allow(dead_code)]
     pub(crate) async fn set_active_helper_for_tests(
         &self,
