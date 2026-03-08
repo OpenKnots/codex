@@ -5843,11 +5843,24 @@ fn build_server_side_compaction_replacement_history(
     history_before_turn: &[ResponseItem],
     current_history: &[ResponseItem],
 ) -> Vec<ResponseItem> {
+    let current_turn_items =
+        if let Some(current_turn_items) = current_history.strip_prefix(history_before_turn) {
+            current_turn_items
+        } else if matches!(
+            current_history.first(),
+            Some(ResponseItem::Compaction { .. })
+        ) {
+            let first_non_compaction = current_history
+                .iter()
+                .position(|item| !matches!(item, ResponseItem::Compaction { .. }))
+                .unwrap_or(current_history.len());
+            &current_history[first_non_compaction..]
+        } else {
+            current_history
+        };
     let mut replacement_history = vec![compaction_item];
     replacement_history.extend(
-        current_history
-            .strip_prefix(history_before_turn)
-            .unwrap_or(current_history)
+        current_turn_items
             .iter()
             .filter(|item| !matches!(item, ResponseItem::GhostSnapshot { .. }))
             .cloned(),
@@ -6015,6 +6028,8 @@ async fn downgrade_known_inline_compaction_error(
             // the pre-turn baseline was captured so `/undo` still works after
             // we downgrade to the legacy compaction path.
             let current_history = sess.clone_history().await;
+            let current_history_items = current_history.raw_items().to_vec();
+            let current_reference_context_item = sess.reference_context_item().await;
             let mut restored_history = preturn_state.history_before_turn.clone();
             restored_history.extend(collect_new_ghost_snapshots_since(
                 &preturn_state.history_before_turn,
@@ -6025,13 +6040,27 @@ async fn downgrade_known_inline_compaction_error(
                 preturn_state.reference_context_before_turn.clone(),
             )
             .await;
-            run_auto_compact(
+            if let Err(err) = run_auto_compact(
                 sess,
                 turn_context,
                 InitialContextInjection::DoNotInject,
                 AutoCompactTrigger::AutoPreTurn,
             )
-            .await?;
+            .await
+            {
+                let latest_history = sess.clone_history().await;
+                let mut restored_current_history = current_history_items;
+                restored_current_history.extend(collect_new_ghost_snapshots_since(
+                    &restored_current_history,
+                    latest_history.raw_items(),
+                ));
+                // If the legacy fallback also fails, restore the live turn
+                // state instead of silently dropping the already-recorded turn.
+                sess.replace_history(restored_current_history, current_reference_context_item)
+                    .await;
+                sess.recompute_token_usage(turn_context).await;
+                return Err(err);
+            }
             if !preturn_state.replay_items.is_empty() {
                 sess.record_into_history(&preturn_state.replay_items, turn_context)
                     .await;
