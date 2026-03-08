@@ -315,6 +315,45 @@ fn build_server_side_compaction_replacement_history_replaces_prior_same_turn_sum
     );
 }
 
+#[test]
+fn build_server_side_compaction_replacement_history_replaces_prior_summary_with_empty_history() {
+    let same_turn_snapshot = ghost_snapshot("ghost-during");
+    let history_before_turn = Vec::new();
+    let current_turn_user = user_message("current turn");
+    let current_turn_tool_output = ResponseItem::FunctionCallOutput {
+        call_id: "call-1".to_string(),
+        output: FunctionCallOutputPayload::from_text("tool result".to_string()),
+    };
+    let prior_compaction = ResponseItem::Compaction {
+        encrypted_content: "INLINE_SUMMARY_1".to_string(),
+    };
+    let new_compaction = ResponseItem::Compaction {
+        encrypted_content: "INLINE_SUMMARY_2".to_string(),
+    };
+    let current_history = vec![
+        prior_compaction,
+        current_turn_user.clone(),
+        current_turn_tool_output.clone(),
+        same_turn_snapshot.clone(),
+    ];
+
+    let replacement_history = build_server_side_compaction_replacement_history(
+        new_compaction.clone(),
+        &history_before_turn,
+        &current_history,
+    );
+
+    assert_eq!(
+        replacement_history,
+        vec![
+            new_compaction,
+            current_turn_user,
+            current_turn_tool_output,
+            same_turn_snapshot,
+        ]
+    );
+}
+
 fn make_mcp_tool(
     server_name: &str,
     tool_name: &str,

@@ -5774,21 +5774,21 @@ fn build_server_side_compaction_replacement_history(
     history_before_turn: &[ResponseItem],
     current_history: &[ResponseItem],
 ) -> Vec<ResponseItem> {
-    let current_turn_items =
-        if let Some(current_turn_items) = current_history.strip_prefix(history_before_turn) {
-            current_turn_items
-        } else if matches!(
-            current_history.first(),
-            Some(ResponseItem::Compaction { .. })
-        ) {
-            let first_non_compaction = current_history
-                .iter()
-                .position(|item| !matches!(item, ResponseItem::Compaction { .. }))
-                .unwrap_or(current_history.len());
-            &current_history[first_non_compaction..]
-        } else {
-            current_history
-        };
+    let current_turn_items = current_history
+        .strip_prefix(history_before_turn)
+        .unwrap_or(current_history);
+    let current_turn_items = if matches!(
+        current_turn_items.first(),
+        Some(ResponseItem::Compaction { .. })
+    ) {
+        let first_non_compaction = current_turn_items
+            .iter()
+            .position(|item| !matches!(item, ResponseItem::Compaction { .. }))
+            .unwrap_or(current_turn_items.len());
+        &current_turn_items[first_non_compaction..]
+    } else {
+        current_turn_items
+    };
     let mut replacement_history = vec![compaction_item];
     replacement_history.extend(
         current_turn_items
