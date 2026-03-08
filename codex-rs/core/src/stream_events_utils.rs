@@ -6,6 +6,7 @@ use std::sync::Arc;
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
 use codex_protocol::config_types::ModeKind;
+use codex_protocol::items::ContextCompactionItem;
 use codex_protocol::items::TurnItem;
 use codex_utils_stream_parser::strip_citations;
 use tokio_util::sync::CancellationToken;
@@ -163,6 +164,39 @@ pub(crate) async fn handle_output_item_done(
     let mut output = OutputItemResult::default();
     let plan_mode = ctx.turn_context.collaboration_mode.mode == ModeKind::Plan;
 
+    if matches!(item, ResponseItem::Compaction { .. }) {
+        let had_active_compaction = matches!(
+            previously_active_item.as_ref(),
+            Some(TurnItem::ContextCompaction(_))
+        );
+        let compaction_item = match previously_active_item {
+            Some(TurnItem::ContextCompaction(item)) => item,
+            _ => ContextCompactionItem::new(),
+        };
+        if !had_active_compaction {
+            ctx.sess
+                .emit_turn_item_started(
+                    &ctx.turn_context,
+                    &TurnItem::ContextCompaction(compaction_item.clone()),
+                )
+                .await;
+        }
+        debug!(
+            turn_id = %ctx.turn_context.sub_id,
+            "processing streamed server-side compaction item"
+        );
+        ctx.sess
+            .apply_server_side_compaction_checkpoint(ctx.turn_context.as_ref(), item)
+            .await;
+        ctx.sess
+            .emit_turn_item_completed(
+                &ctx.turn_context,
+                TurnItem::ContextCompaction(compaction_item),
+            )
+            .await;
+        return Ok(output);
+    }
+
     match ToolRouter::build_tool_call(ctx.sess.as_ref(), item.clone()).await {
         // The model emitted a tool call; log it, persist the item immediately, and queue the tool execution.
         Ok(Some(call)) => {
@@ -319,6 +353,9 @@ pub(crate) async fn handle_non_tool_response_item(
                 }
             }
             Some(turn_item)
+        }
+        ResponseItem::Compaction { .. } => {
+            Some(TurnItem::ContextCompaction(ContextCompactionItem::new()))
         }
         ResponseItem::FunctionCallOutput { .. } | ResponseItem::CustomToolCallOutput { .. } => {
             debug!("unexpected tool output from stream");

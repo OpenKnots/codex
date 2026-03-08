@@ -6,6 +6,7 @@ use std::path::PathBuf;
 use anyhow::Result;
 use codex_core::CodexAuth;
 use codex_core::compact::SUMMARY_PREFIX;
+use codex_core::features::Feature;
 use codex_protocol::items::TurnItem;
 use codex_protocol::models::ContentItem;
 use codex_protocol::models::ResponseItem;
@@ -171,6 +172,20 @@ fn assert_request_contains_realtime_end(request: &responses::ResponsesRequest) {
         body.contains("Reason: inactive"),
         "expected request to use realtime end instructions"
     );
+}
+
+async fn submit_text_turn_and_wait(codex: &codex_core::CodexThread, text: &str) -> Result<()> {
+    codex
+        .submit(Op::UserInput {
+            items: vec![UserInput::Text {
+                text: text.to_string(),
+                text_elements: Vec::new(),
+            }],
+            final_output_json_schema: None,
+        })
+        .await?;
+    wait_for_event(codex, |event| matches!(event, EventMsg::TurnComplete(_))).await;
+    Ok(())
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -358,6 +373,246 @@ async fn remote_compact_runs_automatically() -> Result<()> {
     let follow_up_request = responses_mock.single_request();
     let follow_up_body = follow_up_request.body_json().to_string();
     assert!(follow_up_body.contains("REMOTE_COMPACTED_SUMMARY"));
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn auto_server_side_compaction_uses_inline_context_management() -> Result<()> {
+    skip_if_no_network!(Ok(()));
+
+    let compact_threshold = 120;
+    let first_turn_text = "inline compact turn one";
+    let third_turn_text = "inline compact turn three";
+    let inline_summary = summary_with_prefix("INLINE_SERVER_SUMMARY");
+
+    let harness = TestCodexHarness::with_builder(
+        test_codex()
+            .with_auth(CodexAuth::create_dummy_chatgpt_auth_for_testing())
+            .with_config(move |config| {
+                config
+                    .features
+                    .enable(Feature::ServerSideCompaction)
+                    .expect("enable server-side compaction");
+                config.model_auto_compact_token_limit = Some(compact_threshold);
+            }),
+    )
+    .await?;
+    let codex = harness.test().codex.clone();
+
+    let responses_mock = responses::mount_response_sequence(
+        harness.server(),
+        vec![
+            responses::sse_response(sse(vec![
+                responses::ev_assistant_message("m1", "FIRST_REMOTE_REPLY"),
+                responses::ev_completed_with_tokens("resp-1", 500),
+            ])),
+            responses::sse_response(sse(vec![
+                responses::ev_compaction(&inline_summary),
+                responses::ev_assistant_message("m2", "AFTER_INLINE_REPLY"),
+                responses::ev_completed_with_tokens("resp-2", 80),
+            ])),
+            responses::sse_response(sse(vec![responses::ev_completed("resp-3")])),
+        ],
+    )
+    .await;
+
+    submit_text_turn_and_wait(&codex, first_turn_text).await?;
+
+    codex
+        .submit(Op::UserInput {
+            items: vec![UserInput::Text {
+                text: "inline compact turn two".to_string(),
+                text_elements: Vec::new(),
+            }],
+            final_output_json_schema: None,
+        })
+        .await?;
+    let compacted = wait_for_event_match(&codex, |event| match event {
+        EventMsg::ContextCompacted(_) => Some(true),
+        _ => None,
+    })
+    .await;
+    wait_for_event(&codex, |event| matches!(event, EventMsg::TurnComplete(_))).await;
+    assert!(compacted, "expected inline compaction event");
+
+    submit_text_turn_and_wait(&codex, third_turn_text).await?;
+
+    let requests = responses_mock.requests();
+    assert_eq!(
+        requests.len(),
+        3,
+        "expected three inline /responses requests"
+    );
+
+    let inline_request = requests[1].body_json();
+    assert_eq!(
+        inline_request.get("context_management"),
+        Some(&json!([{
+            "type": "compaction",
+            "compact_threshold": compact_threshold,
+        }])),
+    );
+
+    let post_inline_request = &requests[2];
+    assert!(
+        post_inline_request.body_contains_text(&inline_summary),
+        "expected subsequent request to reuse inline compaction item"
+    );
+    assert!(
+        !post_inline_request.body_contains_text(first_turn_text),
+        "expected pre-compaction user history to be dropped after inline compaction"
+    );
+    assert!(
+        !post_inline_request.body_contains_text("FIRST_REMOTE_REPLY"),
+        "expected pre-compaction assistant history to be dropped after inline compaction"
+    );
+    assert!(
+        post_inline_request.body_contains_text(third_turn_text),
+        "expected next turn to append normally after inline compaction"
+    );
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn auto_server_side_compaction_uses_legacy_remote_path_with_custom_prompt() -> Result<()> {
+    skip_if_no_network!(Ok(()));
+
+    let compact_threshold = 120;
+    let custom_compact_prompt = "CUSTOM_REMOTE_COMPACT_PROMPT";
+
+    let harness = TestCodexHarness::with_builder(
+        test_codex()
+            .with_auth(CodexAuth::create_dummy_chatgpt_auth_for_testing())
+            .with_config(move |config| {
+                config
+                    .features
+                    .enable(Feature::ServerSideCompaction)
+                    .expect("enable server-side compaction");
+                config.model_auto_compact_token_limit = Some(compact_threshold);
+                config.compact_prompt = Some(custom_compact_prompt.to_string());
+            }),
+    )
+    .await?;
+    let codex = harness.test().codex.clone();
+
+    let responses_mock = responses::mount_response_sequence(
+        harness.server(),
+        vec![
+            responses::sse_response(sse(vec![
+                responses::ev_assistant_message("m1", "FIRST_REMOTE_REPLY"),
+                responses::ev_completed_with_tokens("resp-1", 500),
+            ])),
+            responses::sse_response(sse(vec![
+                responses::ev_assistant_message("m2", "AFTER_REMOTE_COMPACT_REPLY"),
+                responses::ev_completed("resp-2"),
+            ])),
+        ],
+    )
+    .await;
+    let compact_mock = responses::mount_compact_user_history_with_summary_once(
+        harness.server(),
+        "CUSTOM_PROMPT_REMOTE_SUMMARY",
+    )
+    .await;
+
+    submit_text_turn_and_wait(&codex, "custom prompt turn one").await?;
+    submit_text_turn_and_wait(&codex, "custom prompt turn two").await?;
+
+    let requests = responses_mock.requests();
+    assert_eq!(requests.len(), 2, "expected two /responses requests");
+    assert_eq!(
+        compact_mock.requests().len(),
+        1,
+        "expected remote compact endpoint to handle the auto-compaction"
+    );
+    assert!(
+        requests[1].body_json().get("context_management").is_none(),
+        "custom compact prompt should opt out of inline compaction"
+    );
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn auto_server_side_compaction_downgrades_known_compat_errors_once() -> Result<()> {
+    skip_if_no_network!(Ok(()));
+
+    let compact_threshold = 120;
+
+    let harness = TestCodexHarness::with_builder(
+        test_codex()
+            .with_auth(CodexAuth::create_dummy_chatgpt_auth_for_testing())
+            .with_config(move |config| {
+                config
+                    .features
+                    .enable(Feature::ServerSideCompaction)
+                    .expect("enable server-side compaction");
+                config.model_auto_compact_token_limit = Some(compact_threshold);
+            }),
+    )
+    .await?;
+    let codex = harness.test().codex.clone();
+
+    let responses_mock = responses::mount_response_sequence(
+        harness.server(),
+        vec![
+            responses::sse_response(sse(vec![
+                responses::ev_assistant_message("m1", "FIRST_REMOTE_REPLY"),
+                responses::ev_completed_with_tokens("resp-1", 500),
+            ])),
+            ResponseTemplate::new(400).set_body_json(json!({
+                "error": {
+                    "message": "Unknown field `context_management` on request body",
+                }
+            })),
+            responses::sse_response(sse(vec![
+                responses::ev_assistant_message("m2", "AFTER_DOWNGRADE_REPLY"),
+                responses::ev_completed("resp-2"),
+            ])),
+        ],
+    )
+    .await;
+    let compact_mock = responses::mount_compact_user_history_with_summary_once(
+        harness.server(),
+        "DOWNGRADE_REMOTE_SUMMARY",
+    )
+    .await;
+
+    submit_text_turn_and_wait(&codex, "downgrade turn one").await?;
+    submit_text_turn_and_wait(&codex, "downgrade turn two").await?;
+
+    let requests = responses_mock.requests();
+    assert_eq!(
+        requests.len(),
+        3,
+        "expected initial turn, failed inline attempt, and downgraded follow-up request"
+    );
+
+    let inline_attempt = requests[1].body_json();
+    assert_eq!(
+        inline_attempt.get("context_management"),
+        Some(&json!([{
+            "type": "compaction",
+            "compact_threshold": compact_threshold,
+        }])),
+    );
+
+    let downgraded_request = requests[2].body_json();
+    assert!(
+        downgraded_request.get("context_management").is_none(),
+        "downgraded retry should fall back to the legacy client-side request shape"
+    );
+    assert!(
+        requests[2].body_contains_text("DOWNGRADE_REMOTE_SUMMARY"),
+        "downgraded retry should reuse the client-side compaction output"
+    );
+    assert_eq!(
+        compact_mock.requests().len(),
+        1,
+        "expected one legacy remote compact request after the compat error"
+    );
 
     Ok(())
 }

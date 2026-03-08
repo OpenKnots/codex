@@ -42,6 +42,9 @@ pub struct Prompt {
 
     /// Optional the output schema for the model's response.
     pub output_schema: Option<Value>,
+
+    /// Optional inline server-side compaction threshold for the next Responses request.
+    pub inline_compaction_threshold: Option<i64>,
 }
 
 impl Prompt {
@@ -316,6 +319,7 @@ mod tests {
                 verbosity: Some(OpenAiVerbosity::Low),
                 format: None,
             }),
+            context_management: None,
         };
 
         let v = serde_json::to_value(&req).expect("json");
@@ -355,6 +359,7 @@ mod tests {
             prompt_cache_key: None,
             service_tier: None,
             text: Some(text_controls),
+            context_management: None,
         };
 
         let v = serde_json::to_value(&req).expect("json");
@@ -392,6 +397,7 @@ mod tests {
             prompt_cache_key: None,
             service_tier: None,
             text: None,
+            context_management: None,
         };
 
         let v = serde_json::to_value(&req).expect("json");
@@ -414,6 +420,7 @@ mod tests {
             prompt_cache_key: None,
             service_tier: Some(ServiceTier::Flex.to_string()),
             text: None,
+            context_management: None,
         };
 
         let v = serde_json::to_value(&req).expect("json");
