@@ -70,6 +70,30 @@ fn extract_conversation_id(path: &std::path::Path) -> String {
         .to_string()
 }
 
+fn extract_forked_from_id(path: &std::path::Path) -> Option<String> {
+    let content = std::fs::read_to_string(path).unwrap();
+    let mut lines = content.lines();
+    let meta_line = lines.next().expect("missing meta line");
+    let meta: Value = serde_json::from_str(meta_line).expect("invalid meta json");
+    meta.get("payload")
+        .and_then(|payload| payload.get("forked_from_id"))
+        .and_then(Value::as_str)
+        .map(ToString::to_string)
+}
+
+fn rollout_contains_fork_reference(path: &std::path::Path) -> bool {
+    let Ok(content) = std::fs::read_to_string(path) else {
+        return false;
+    };
+    content.lines().skip(1).any(|line| {
+        serde_json::from_str::<Value>(line)
+            .ok()
+            .and_then(|item| item.get("type").and_then(Value::as_str).map(str::to_string))
+            .as_deref()
+            == Some("fork_reference")
+    })
+}
+
 fn exec_fixture() -> anyhow::Result<std::path::PathBuf> {
     Ok(find_resource!("tests/fixtures/cli_responses_fixture.sse")?)
 }
@@ -117,7 +141,14 @@ fn exec_fork_by_id_creates_new_session_with_copied_history() -> anyhow::Result<(
     );
 
     let forked_content = std::fs::read_to_string(&forked_path)?;
-    assert!(forked_content.contains(&marker));
+    assert_eq!(
+        extract_forked_from_id(&forked_path).as_deref(),
+        Some(session_id.as_str())
+    );
+    assert!(
+        forked_content.contains(&marker) || rollout_contains_fork_reference(&forked_path),
+        "forked rollout should either inline parent history or record a fork reference"
+    );
     assert!(forked_content.contains(&marker2));
 
     let original_content = std::fs::read_to_string(&original_path)?;
