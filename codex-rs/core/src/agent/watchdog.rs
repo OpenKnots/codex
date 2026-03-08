@@ -243,18 +243,54 @@ impl WatchdogManager {
                 .await
                 .map(|thread| thread.last_completed_turn_used_agent_send_input())
                 .unwrap_or(false);
-            if let AgentStatus::Completed(Some(message)) = &helper_status
-                && !message.trim().is_empty()
-                && !helper_sent_input
-                && let Err(err) = control_for_spawn
-                    .send_agent_message(snapshot.owner_thread_id, helper_id, message.clone())
-                    .await
-            {
-                warn!(
-                    helper_id = %helper_id,
-                    owner_thread_id = %snapshot.owner_thread_id,
-                    "watchdog helper forward failed: {err}"
-                );
+            // Every watchdog check-in must wake the owner thread exactly once.
+            //
+            // Preferred path: the helper explicitly calls `send_input`.
+            // Mandatory fallback: if the helper reaches a terminal state without
+            // using `send_input`, forward a conclusory inbox message to the
+            // owner so the owner thread is still resumed.
+            if !helper_sent_input {
+                let fallback_message = match &helper_status {
+                    AgentStatus::Completed(Some(message)) if !message.trim().is_empty() => {
+                        Some(message.clone())
+                    }
+                    AgentStatus::Completed(_) => Some(
+                        "Watchdog check-in completed without calling send_input or returning a final message."
+                            .to_string(),
+                    ),
+                    AgentStatus::Errored(message) if !message.trim().is_empty() => Some(
+                        format!("Watchdog check-in failed before calling send_input: {message}"),
+                    ),
+                    AgentStatus::Errored(_) => Some(
+                        "Watchdog check-in failed before calling send_input.".to_string(),
+                    ),
+                    AgentStatus::Shutdown => {
+                        Some("Watchdog check-in ended before calling send_input.".to_string())
+                    }
+                    AgentStatus::NotFound => Some(
+                        "Watchdog check-in disappeared before calling send_input.".to_string(),
+                    ),
+                    AgentStatus::PendingInit | AgentStatus::Running => None,
+                };
+
+                if let Some(message) = fallback_message {
+                    if let Err(err) = control_for_spawn
+                        .send_watchdog_wakeup(snapshot.owner_thread_id, helper_id, message)
+                        .await
+                    {
+                        warn!(
+                            helper_id = %helper_id,
+                            owner_thread_id = %snapshot.owner_thread_id,
+                            "watchdog helper forward failed: {err}"
+                        );
+                    } else {
+                        info!(
+                            helper_id = %helper_id,
+                            owner_thread_id = %snapshot.owner_thread_id,
+                            "watchdog forwarded helper completion to owner"
+                        );
+                    }
+                }
             }
             if let Err(err) = control_for_spawn.shutdown_agent(helper_id).await {
                 warn!(
