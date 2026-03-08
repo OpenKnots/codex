@@ -86,10 +86,6 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::Once;
 use std::time::Duration as StdDuration;
-use wiremock::Mock;
-use wiremock::MockServer;
-use wiremock::ResponseTemplate;
-use wiremock::matchers::method;
 
 #[path = "codex_tests_guardian.rs"]
 mod guardian_tests;
@@ -239,24 +235,6 @@ fn assistant_message_stream_parsers_seed_plan_parser_across_added_and_delta_boun
 }
 
 #[test]
-fn collect_new_ghost_snapshots_since_returns_only_snapshots_added_after_turn_start() {
-    let prior_snapshot = ghost_snapshot("ghost-before");
-    let same_turn_snapshot = ghost_snapshot("ghost-during");
-    let history_before_turn = vec![user_message("earlier"), prior_snapshot.clone()];
-    let current_history = vec![
-        user_message("earlier"),
-        prior_snapshot,
-        user_message("current turn"),
-        assistant_message("in progress"),
-        same_turn_snapshot.clone(),
-    ];
-
-    let new_snapshots = collect_new_ghost_snapshots_since(&history_before_turn, &current_history);
-
-    assert_eq!(new_snapshots, vec![same_turn_snapshot]);
-}
-
-#[test]
 fn build_server_side_compaction_replacement_history_keeps_current_turn_inputs() {
     let prior_snapshot = ghost_snapshot("ghost-before");
     let same_turn_snapshot = ghost_snapshot("ghost-during");
@@ -334,92 +312,6 @@ fn build_server_side_compaction_replacement_history_replaces_prior_same_turn_sum
             prior_snapshot,
             same_turn_snapshot,
         ]
-    );
-}
-
-#[tokio::test]
-async fn downgrade_known_inline_compaction_error_restores_current_turn_when_fallback_fails() {
-    let server = MockServer::start().await;
-    Mock::given(method("POST"))
-        .respond_with(ResponseTemplate::new(500).set_body_string("compact unavailable"))
-        .mount(&server)
-        .await;
-
-    let (mut session, mut turn_context) = make_session_and_context().await;
-    let mut provider = crate::model_provider_info::ModelProviderInfo::create_openai_provider();
-    provider.base_url = Some(format!("{}/v1", server.uri()));
-    turn_context.provider = provider.clone();
-    session.services.model_client = ModelClient::new(
-        Some(Arc::clone(&session.services.auth_manager)),
-        session.conversation_id,
-        provider,
-        turn_context.session_source.clone(),
-        turn_context.config.model_verbosity,
-        ws_version_from_features(turn_context.config.as_ref()),
-        turn_context
-            .config
-            .features
-            .enabled(Feature::EnableRequestCompression),
-        turn_context
-            .config
-            .features
-            .enabled(Feature::RuntimeMetrics),
-        Session::build_model_client_beta_features_header(turn_context.config.as_ref()),
-    );
-    let session = Arc::new(session);
-    let turn_context = Arc::new(turn_context);
-
-    let history_before_turn = vec![user_message("earlier")];
-    let context_update = ResponseItem::Message {
-        id: None,
-        role: "developer".to_string(),
-        content: vec![ContentItem::InputText {
-            text: "context update".to_string(),
-        }],
-        end_turn: None,
-        phase: None,
-    };
-    let current_turn_user = user_message("current turn");
-    let same_turn_snapshot = ghost_snapshot("ghost-during");
-    let replay_items = vec![context_update.clone(), current_turn_user.clone()];
-    let current_history = vec![
-        history_before_turn[0].clone(),
-        context_update,
-        current_turn_user,
-        same_turn_snapshot,
-    ];
-    let turn_context_item = turn_context.to_turn_context_item();
-    session
-        .replace_history(current_history.clone(), Some(turn_context_item.clone()))
-        .await;
-
-    let result = downgrade_known_inline_compaction_error(
-        &session,
-        &turn_context,
-        PendingServerSideCompaction {
-            threshold: 123,
-            trigger: AutoCompactTrigger::AutoPreTurn,
-        },
-        Some(&PreTurnInlineCompactionState {
-            history_before_turn,
-            reference_context_before_turn: None,
-            replay_items,
-            turn_context_item: turn_context_item.clone(),
-        }),
-        &CodexErr::InvalidRequest("compact_threshold is unsupported".to_string()),
-    )
-    .await;
-
-    assert!(result.is_err());
-    assert_eq!(
-        session.clone_history().await.raw_items(),
-        current_history.as_slice()
-    );
-    assert_eq!(
-        serde_json::to_value(session.reference_context_item().await)
-            .expect("serialize restored reference context"),
-        serde_json::to_value(Some(turn_context_item))
-            .expect("serialize expected reference context")
     );
 }
 
@@ -2433,7 +2325,6 @@ pub(crate) async fn make_session_and_context() -> (Session, TurnContext) {
         active_turn: Mutex::new(None),
         services,
         js_repl,
-        inline_server_side_compaction_incompatible: std::sync::atomic::AtomicBool::new(false),
         next_internal_sub_id: AtomicU64::new(0),
     };
 
@@ -2986,7 +2877,6 @@ pub(crate) async fn make_session_and_context_with_dynamic_tools_and_rx(
         active_turn: Mutex::new(None),
         services,
         js_repl,
-        inline_server_side_compaction_incompatible: std::sync::atomic::AtomicBool::new(false),
         next_internal_sub_id: AtomicU64::new(0),
     });
 

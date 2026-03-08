@@ -4,9 +4,7 @@ use std::fmt::Debug;
 use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::sync::atomic::AtomicBool;
 use std::sync::atomic::AtomicU64;
-use std::sync::atomic::Ordering;
 
 use crate::AuthManager;
 use crate::CodexAuth;
@@ -121,7 +119,6 @@ use codex_utils_stream_parser::strip_citations;
 use futures::future::BoxFuture;
 use futures::prelude::*;
 use futures::stream::FuturesOrdered;
-use reqwest::StatusCode;
 use rmcp::model::ListResourceTemplatesResult;
 use rmcp::model::ListResourcesResult;
 use rmcp::model::PaginatedRequestParams;
@@ -658,7 +655,6 @@ pub(crate) struct Session {
     pub(crate) active_turn: Mutex<Option<ActiveTurn>>,
     pub(crate) services: SessionServices,
     js_repl: Arc<JsReplHandle>,
-    inline_server_side_compaction_incompatible: AtomicBool,
     next_internal_sub_id: AtomicU64,
 }
 
@@ -1624,7 +1620,6 @@ impl Session {
             active_turn: Mutex::new(None),
             services,
             js_repl,
-            inline_server_side_compaction_incompatible: AtomicBool::new(false),
             next_internal_sub_id: AtomicU64::new(0),
         });
         if let Some(network_policy_decider_session) = network_policy_decider_session {
@@ -3315,19 +3310,6 @@ impl Session {
     pub(crate) fn features(&self) -> ManagedFeatures {
         self.features.clone()
     }
-
-    fn inline_server_side_compaction_supported(&self) -> bool {
-        !self
-            .inline_server_side_compaction_incompatible
-            .load(Ordering::Relaxed)
-    }
-
-    fn disable_inline_server_side_compaction(&self) -> bool {
-        !self
-            .inline_server_side_compaction_incompatible
-            .swap(true, Ordering::Relaxed)
-    }
-
     pub(crate) async fn collaboration_mode(&self) -> CollaborationMode {
         let state = self.state.lock().await;
         state.session_configuration.collaboration_mode.clone()
@@ -5347,9 +5329,7 @@ pub(crate) async fn run_turn(
     let skills_outcome = Some(turn_context.turn_skills.outcome.as_ref());
 
     let history_before_turn = sess.clone_history().await.raw_items().to_vec();
-    let reference_context_before_turn = sess.reference_context_item().await;
-    let context_update_items = sess
-        .record_context_updates_and_set_reference_context_item(turn_context.as_ref())
+    sess.record_context_updates_and_set_reference_context_item(turn_context.as_ref())
         .await;
 
     let loaded_plugins = sess
@@ -5513,19 +5493,6 @@ pub(crate) async fn run_turn(
             .await;
     }
 
-    let preturn_inline_compaction_state = PreTurnInlineCompactionState {
-        history_before_turn,
-        reference_context_before_turn,
-        replay_items: context_update_items
-            .iter()
-            .cloned()
-            .chain(std::iter::once(response_item.clone()))
-            .chain(skill_items.iter().cloned())
-            .chain(plugin_items.iter().cloned())
-            .collect(),
-        turn_context_item: turn_context.to_turn_context_item(),
-    };
-
     sess.maybe_start_ghost_snapshot(Arc::clone(&turn_context), cancellation_token.child_token())
         .await;
     let mut last_agent_message: Option<String> = None;
@@ -5594,7 +5561,7 @@ pub(crate) async fn run_turn(
             &mut client_session,
             turn_metadata_header.as_deref(),
             sampling_request_input,
-            &preturn_inline_compaction_state.history_before_turn,
+            &history_before_turn,
             inline_compaction_for_request.map(|pending| pending.threshold),
             &turn_enabled_connectors,
             skills_outcome,
@@ -5767,20 +5734,6 @@ pub(crate) async fn run_turn(
                 break;
             }
             Err(e) => {
-                if let Some(pending_compaction) = pending_server_side_compaction
-                    && downgrade_known_inline_compaction_error(
-                        &sess,
-                        &turn_context,
-                        pending_compaction,
-                        Some(&preturn_inline_compaction_state),
-                        &e,
-                    )
-                    .await
-                    .unwrap_or(false)
-                {
-                    pending_server_side_compaction = None;
-                    continue;
-                }
                 info!("Turn error: {e:#}");
                 let event = EventMsg::Error(e.to_error_event(None));
                 sess.send_event(&turn_context, event).await;
@@ -5814,28 +5767,6 @@ impl AutoCompactTrigger {
 struct PendingServerSideCompaction {
     threshold: i64,
     trigger: AutoCompactTrigger,
-}
-
-#[derive(Clone, Debug)]
-struct PreTurnInlineCompactionState {
-    history_before_turn: Vec<ResponseItem>,
-    reference_context_before_turn: Option<TurnContextItem>,
-    replay_items: Vec<ResponseItem>,
-    turn_context_item: TurnContextItem,
-}
-
-fn collect_new_ghost_snapshots_since(
-    history_before_turn: &[ResponseItem],
-    current_history: &[ResponseItem],
-) -> Vec<ResponseItem> {
-    current_history
-        .iter()
-        .filter(|item| {
-            matches!(item, ResponseItem::GhostSnapshot { .. })
-                && !history_before_turn.contains(item)
-        })
-        .cloned()
-        .collect()
 }
 
 fn build_server_side_compaction_replacement_history(
@@ -5892,29 +5823,6 @@ fn record_compaction_metric(
         .counter("codex.compaction", 1, &tags);
 }
 
-fn record_compaction_downgrade_metric(
-    sess: &Session,
-    trigger: AutoCompactTrigger,
-    status: &'static str,
-    reason: &'static str,
-) {
-    let tags = [
-        ("trigger", trigger.as_str()),
-        ("status", status),
-        ("reason", reason),
-    ];
-    sess.services
-        .session_telemetry
-        .counter("codex.compaction_downgrade", 1, &tags);
-}
-
-fn has_custom_compact_prompt(turn_context: &TurnContext) -> bool {
-    turn_context
-        .compact_prompt
-        .as_ref()
-        .is_some_and(|prompt| prompt != compact::SUMMARIZATION_PROMPT)
-}
-
 fn inline_server_side_compaction_threshold(
     sess: &Session,
     turn_context: &TurnContext,
@@ -5922,15 +5830,12 @@ fn inline_server_side_compaction_threshold(
     if !sess.enabled(Feature::ServerSideCompaction) {
         return None;
     }
-    if !sess.inline_server_side_compaction_supported() {
-        return None;
-    }
     if !should_use_remote_compact_task(&turn_context.provider) {
         return None;
     }
-    if has_custom_compact_prompt(turn_context) {
-        return None;
-    }
+    // OpenAI inline auto-compaction uses Responses `context_management`, which has no
+    // compaction-prompt field. Auto-compaction therefore ignores `compact_prompt`, while manual
+    // `/compact` still uses the point-in-time compact endpoint.
     turn_context.model_info.auto_compact_token_limit()
 }
 
@@ -5941,12 +5846,8 @@ fn record_inline_compaction_skip(
 ) {
     let reason = if !sess.enabled(Feature::ServerSideCompaction) {
         "flag_off"
-    } else if !sess.inline_server_side_compaction_supported() {
-        "backend_incompatible"
     } else if !should_use_remote_compact_task(&turn_context.provider) {
         "non_openai"
-    } else if has_custom_compact_prompt(turn_context) {
-        "custom_compact_prompt"
     } else {
         "not_eligible"
     };
@@ -5963,152 +5864,6 @@ fn record_inline_compaction_skip(
         "skipped",
         &[("reason", reason)],
     );
-}
-
-fn is_inline_compaction_compat_error(err: &CodexErr) -> bool {
-    fn mentions_inline_compaction(message: &str) -> bool {
-        let lower = message.to_ascii_lowercase();
-        lower.contains("context_management") || lower.contains("compact_threshold")
-    }
-
-    match err {
-        CodexErr::InvalidRequest(message) => mentions_inline_compaction(message),
-        CodexErr::UnexpectedStatus(error) if error.status == StatusCode::BAD_REQUEST => {
-            mentions_inline_compaction(&error.body)
-        }
-        _ => false,
-    }
-}
-
-async fn downgrade_known_inline_compaction_error(
-    sess: &Arc<Session>,
-    turn_context: &Arc<TurnContext>,
-    pending_compaction: PendingServerSideCompaction,
-    preturn_state: Option<&PreTurnInlineCompactionState>,
-    err: &CodexErr,
-) -> CodexResult<bool> {
-    if !is_inline_compaction_compat_error(err) {
-        return Ok(false);
-    }
-
-    if sess.disable_inline_server_side_compaction() {
-        tracing::warn!(
-            turn_id = %turn_context.sub_id,
-            trigger = pending_compaction.trigger.as_str(),
-            "disabling inline server-side compaction for this session after compatibility failure"
-        );
-    }
-
-    tracing::warn!(
-        turn_id = %turn_context.sub_id,
-        trigger = pending_compaction.trigger.as_str(),
-        error = %err,
-        "downgrading inline server-side compaction to client-side compaction"
-    );
-    record_compaction_downgrade_metric(
-        sess,
-        pending_compaction.trigger,
-        "attempted",
-        "known_compat_error",
-    );
-    record_compaction_metric(
-        sess,
-        "server_side",
-        pending_compaction.trigger,
-        "downgraded",
-        &[("reason", "known_compat_error")],
-    );
-
-    let downgrade_result = match pending_compaction.trigger {
-        AutoCompactTrigger::AutoPreTurn => {
-            let Some(preturn_state) = preturn_state else {
-                return Ok(false);
-            };
-            // Preserve same-turn ghost snapshots that may have completed after
-            // the pre-turn baseline was captured so `/undo` still works after
-            // we downgrade to the legacy compaction path.
-            let current_history = sess.clone_history().await;
-            let current_history_items = current_history.raw_items().to_vec();
-            let current_reference_context_item = sess.reference_context_item().await;
-            let mut restored_history = preturn_state.history_before_turn.clone();
-            restored_history.extend(collect_new_ghost_snapshots_since(
-                &preturn_state.history_before_turn,
-                current_history.raw_items(),
-            ));
-            sess.replace_history(
-                restored_history,
-                preturn_state.reference_context_before_turn.clone(),
-            )
-            .await;
-            if let Err(err) = run_auto_compact(
-                sess,
-                turn_context,
-                InitialContextInjection::DoNotInject,
-                AutoCompactTrigger::AutoPreTurn,
-            )
-            .await
-            {
-                let latest_history = sess.clone_history().await;
-                let mut restored_current_history = current_history_items;
-                restored_current_history.extend(collect_new_ghost_snapshots_since(
-                    &restored_current_history,
-                    latest_history.raw_items(),
-                ));
-                // If the legacy fallback also fails, restore the live turn
-                // state instead of silently dropping the already-recorded turn.
-                sess.replace_history(restored_current_history, current_reference_context_item)
-                    .await;
-                sess.recompute_token_usage(turn_context).await;
-                return Err(err);
-            }
-            if !preturn_state.replay_items.is_empty() {
-                sess.record_into_history(&preturn_state.replay_items, turn_context)
-                    .await;
-                sess.persist_rollout_response_items(&preturn_state.replay_items)
-                    .await;
-            }
-            sess.persist_rollout_items(&[RolloutItem::TurnContext(
-                preturn_state.turn_context_item.clone(),
-            )])
-            .await;
-            {
-                let mut state = sess.state.lock().await;
-                state.set_reference_context_item(Some(preturn_state.turn_context_item.clone()));
-            }
-            sess.recompute_token_usage(turn_context).await;
-            Ok(())
-        }
-        AutoCompactTrigger::AutoFollowUp => {
-            run_auto_compact(
-                sess,
-                turn_context,
-                InitialContextInjection::BeforeLastUserMessage,
-                AutoCompactTrigger::AutoFollowUp,
-            )
-            .await
-        }
-        AutoCompactTrigger::PreviousModelPreflight => {
-            return Ok(false);
-        }
-    };
-
-    if let Err(err) = downgrade_result {
-        record_compaction_downgrade_metric(
-            sess,
-            pending_compaction.trigger,
-            "failed",
-            "known_compat_error",
-        );
-        return Err(err);
-    }
-
-    record_compaction_downgrade_metric(
-        sess,
-        pending_compaction.trigger,
-        "succeeded",
-        "known_compat_error",
-    );
-    Ok(true)
 }
 
 async fn run_pre_sampling_compact(
@@ -6165,6 +5920,10 @@ async fn maybe_run_previous_model_inline_compact(
     turn_context: &Arc<TurnContext>,
     total_usage_tokens: i64,
 ) -> CodexResult<bool> {
+    if inline_server_side_compaction_threshold(sess, turn_context).is_some() {
+        return Ok(false);
+    }
+
     let Some(previous_turn_settings) = sess.previous_turn_settings().await else {
         return Ok(false);
     };

@@ -552,11 +552,12 @@ async fn auto_server_side_compaction_keeps_current_turn_inputs_for_follow_ups() 
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn auto_server_side_compaction_uses_legacy_remote_path_with_custom_prompt() -> Result<()> {
+async fn auto_server_side_compaction_stays_inline_with_custom_prompt() -> Result<()> {
     skip_if_no_network!(Ok(()));
 
     let compact_threshold = 120;
     let custom_compact_prompt = "CUSTOM_REMOTE_COMPACT_PROMPT";
+    let inline_summary = summary_with_prefix("INLINE_SERVER_SUMMARY");
 
     let harness = TestCodexHarness::with_builder(
         test_codex()
@@ -581,15 +582,18 @@ async fn auto_server_side_compaction_uses_legacy_remote_path_with_custom_prompt(
                 responses::ev_completed_with_tokens("resp-1", 500),
             ])),
             responses::sse_response(sse(vec![
-                responses::ev_assistant_message("m2", "AFTER_REMOTE_COMPACT_REPLY"),
+                responses::ev_compaction(&inline_summary),
+                responses::ev_assistant_message("m2", "AFTER_INLINE_REPLY"),
                 responses::ev_completed("resp-2"),
             ])),
         ],
     )
     .await;
-    let compact_mock = responses::mount_compact_user_history_with_summary_once(
+    let compact_mock = responses::mount_compact_response_once(
         harness.server(),
-        "CUSTOM_PROMPT_REMOTE_SUMMARY",
+        ResponseTemplate::new(200)
+            .insert_header("content-type", "application/json")
+            .set_body_json(json!({ "output": [] })),
     )
     .await;
 
@@ -600,19 +604,26 @@ async fn auto_server_side_compaction_uses_legacy_remote_path_with_custom_prompt(
     assert_eq!(requests.len(), 2, "expected two /responses requests");
     assert_eq!(
         compact_mock.requests().len(),
-        1,
-        "expected remote compact endpoint to handle the auto-compaction"
+        0,
+        "expected auto-compaction to stay on inline context management"
+    );
+    assert_eq!(
+        requests[1].body_json().get("context_management"),
+        Some(&json!([{
+            "type": "compaction",
+            "compact_threshold": compact_threshold,
+        }])),
     );
     assert!(
-        requests[1].body_json().get("context_management").is_none(),
-        "custom compact prompt should opt out of inline compaction"
+        !requests[1].body_contains_text(custom_compact_prompt),
+        "inline auto-compaction should not send the OpenAI-unsupported compact prompt"
     );
 
     Ok(())
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn auto_server_side_compaction_downgrades_known_compat_errors_once() -> Result<()> {
+async fn auto_server_side_compaction_reports_inline_compat_errors_without_fallback() -> Result<()> {
     skip_if_no_network!(Ok(()));
 
     let compact_threshold = 120;
@@ -643,35 +654,39 @@ async fn auto_server_side_compaction_downgrades_known_compat_errors_once() -> Re
                     "message": "Unknown field `context_management` on request body",
                 }
             })),
-            responses::sse_response(sse(vec![
-                responses::ev_assistant_message("m2", "AFTER_DOWNGRADE_REPLY"),
-                responses::ev_completed_with_tokens("resp-2", 500),
-            ])),
-            responses::sse_response(sse(vec![
-                responses::ev_assistant_message("m3", "AFTER_COMPAT_SKIP_REPLY"),
-                responses::ev_completed("resp-3"),
-            ])),
         ],
     )
     .await;
-    let compact_mock = responses::mount_compact_user_history_with_summary_sequence(
+    let compact_mock = responses::mount_compact_response_once(
         harness.server(),
-        vec![
-            "DOWNGRADE_REMOTE_SUMMARY".to_string(),
-            "POST_DOWNGRADE_REMOTE_SUMMARY".to_string(),
-        ],
+        ResponseTemplate::new(200)
+            .insert_header("content-type", "application/json")
+            .set_body_json(json!({ "output": [] })),
     )
     .await;
 
     submit_text_turn_and_wait(&codex, "downgrade turn one").await?;
-    submit_text_turn_and_wait(&codex, "downgrade turn two").await?;
-    submit_text_turn_and_wait(&codex, "downgrade turn three").await?;
+    codex
+        .submit(Op::UserInput {
+            items: vec![UserInput::Text {
+                text: "downgrade turn two".to_string(),
+                text_elements: Vec::new(),
+            }],
+            final_output_json_schema: None,
+        })
+        .await?;
+    let error_message = wait_for_event_match(&codex, |event| match event {
+        EventMsg::Error(err) => Some(err.message.clone()),
+        _ => None,
+    })
+    .await;
+    wait_for_event(&codex, |event| matches!(event, EventMsg::TurnComplete(_))).await;
 
     let requests = responses_mock.requests();
     assert_eq!(
         requests.len(),
-        4,
-        "expected the initial turn, one failed inline attempt, one downgraded retry, and a later direct legacy request"
+        2,
+        "expected the initial turn plus one failed inline attempt"
     );
 
     let inline_attempt = requests[1].body_json();
@@ -682,28 +697,14 @@ async fn auto_server_side_compaction_downgrades_known_compat_errors_once() -> Re
             "compact_threshold": compact_threshold,
         }])),
     );
-
-    let downgraded_request = requests[2].body_json();
     assert!(
-        downgraded_request.get("context_management").is_none(),
-        "downgraded retry should fall back to the legacy client-side request shape"
-    );
-    assert!(
-        requests[2].body_contains_text("DOWNGRADE_REMOTE_SUMMARY"),
-        "downgraded retry should reuse the client-side compaction output"
-    );
-    assert!(
-        requests[3].body_json().get("context_management").is_none(),
-        "future auto-compaction requests should skip inline compaction after a known compat error"
-    );
-    assert!(
-        requests[3].body_contains_text("POST_DOWNGRADE_REMOTE_SUMMARY"),
-        "future auto-compaction requests should go straight to the legacy compaction output"
+        error_message.contains("Unknown field `context_management` on request body"),
+        "expected the inline compatibility error to surface, got {error_message}"
     );
     assert_eq!(
         compact_mock.requests().len(),
-        2,
-        "expected later auto-compactions to use the legacy path directly after the compat error"
+        0,
+        "expected no legacy /compact fallback after an inline compatibility error"
     );
 
     Ok(())
