@@ -6807,7 +6807,7 @@ impl ChatWidget {
                             preset.approval,
                             preset.sandbox.clone(),
                             base_name.clone(),
-                            false,
+                            ApprovalReviewPolicy::ManualOnly,
                         )
                     }
                 }
@@ -6817,7 +6817,7 @@ impl ChatWidget {
                         preset.approval,
                         preset.sandbox.clone(),
                         base_name.clone(),
-                        false,
+                        ApprovalReviewPolicy::ManualOnly,
                     )
                 }
             } else {
@@ -6825,7 +6825,7 @@ impl ChatWidget {
                     preset.approval,
                     preset.sandbox.clone(),
                     base_name.clone(),
-                    false,
+                    ApprovalReviewPolicy::ManualOnly,
                 )
             };
             if preset.id == "auto" {
@@ -6858,7 +6858,7 @@ impl ChatWidget {
                             preset.approval,
                             preset.sandbox.clone(),
                             "Smart Approvals".to_string(),
-                            true,
+                            ApprovalReviewPolicy::AutoOnly,
                         ),
                         dismiss_on_select: true,
                         disabled_reason: approval_disabled_reason
@@ -6925,7 +6925,7 @@ impl ChatWidget {
         approval: AskForApproval,
         sandbox: SandboxPolicy,
         label: String,
-        guardian_approval_enabled: bool,
+        approval_review_policy: ApprovalReviewPolicy,
     ) -> Vec<SelectionAction> {
         vec![Box::new(move |tx| {
             let sandbox_clone = sandbox.clone();
@@ -6941,11 +6941,9 @@ impl ChatWidget {
                 collaboration_mode: None,
                 personality: None,
             }));
-            tx.send(AppEvent::UpdateFeatureFlags {
-                updates: vec![(Feature::GuardianApproval, guardian_approval_enabled)],
-            });
             tx.send(AppEvent::UpdateAskForApprovalPolicy(approval));
             tx.send(AppEvent::UpdateSandboxPolicy(sandbox_clone));
+            tx.send(AppEvent::UpdateApprovalReviewPolicy(approval_review_policy));
             tx.send(AppEvent::InsertHistoryCell(Box::new(
                 history_cell::new_info_event(format!("Permissions updated to {label}"), None),
             )));
@@ -7012,14 +7010,22 @@ impl ChatWidget {
         ));
         let header = ColumnRenderable::with(header_children);
 
-        let mut accept_actions =
-            Self::approval_preset_actions(approval, sandbox.clone(), selected_name.clone(), false);
+        let mut accept_actions = Self::approval_preset_actions(
+            approval,
+            sandbox.clone(),
+            selected_name.clone(),
+            ApprovalReviewPolicy::ManualOnly,
+        );
         accept_actions.push(Box::new(|tx| {
             tx.send(AppEvent::UpdateFullAccessWarningAcknowledged(true));
         }));
 
-        let mut accept_and_remember_actions =
-            Self::approval_preset_actions(approval, sandbox, selected_name, false);
+        let mut accept_and_remember_actions = Self::approval_preset_actions(
+            approval,
+            sandbox,
+            selected_name,
+            ApprovalReviewPolicy::ManualOnly,
+        );
         accept_and_remember_actions.push(Box::new(|tx| {
             tx.send(AppEvent::UpdateFullAccessWarningAcknowledged(true));
             tx.send(AppEvent::PersistFullAccessWarningAcknowledged);
@@ -7133,6 +7139,7 @@ impl ChatWidget {
                 approval,
                 sandbox,
                 mode_label.to_string(),
+                ApprovalReviewPolicy::ManualOnly,
             ));
         }
 
@@ -7146,6 +7153,7 @@ impl ChatWidget {
                 approval,
                 sandbox,
                 mode_label.to_string(),
+                ApprovalReviewPolicy::ManualOnly,
             ));
         }
 
