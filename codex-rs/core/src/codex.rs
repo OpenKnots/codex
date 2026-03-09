@@ -3213,8 +3213,6 @@ impl Session {
             1,
             &[("mode", "server_side")],
         );
-        self.send_raw_response_items(turn_context, std::slice::from_ref(&item))
-            .await;
         self.recompute_token_usage(turn_context).await;
     }
 

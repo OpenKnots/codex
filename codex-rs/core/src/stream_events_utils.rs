@@ -25,6 +25,8 @@ use codex_protocol::models::FunctionCallOutputBody;
 use codex_protocol::models::FunctionCallOutputPayload;
 use codex_protocol::models::ResponseInputItem;
 use codex_protocol::models::ResponseItem;
+use codex_protocol::protocol::EventMsg;
+use codex_protocol::protocol::RawResponseItemEvent;
 use codex_utils_stream_parser::strip_proposed_plan_blocks;
 use futures::Future;
 use tracing::debug;
@@ -184,6 +186,12 @@ pub(crate) async fn handle_output_item_done(
             .await;
         ctx.sess
             .emit_turn_item_completed(&ctx.turn_context, turn_item)
+            .await;
+        ctx.sess
+            .send_event(
+                &ctx.turn_context,
+                EventMsg::RawResponseItem(RawResponseItemEvent { item: item.clone() }),
+            )
             .await;
         output.pending_server_side_compaction = Some(PendingServerSideCompactionCheckpoint {
             history_at_checkpoint: ctx.sess.clone_history().await.raw_items().to_vec(),

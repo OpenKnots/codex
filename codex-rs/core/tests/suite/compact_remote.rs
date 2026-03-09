@@ -596,6 +596,100 @@ async fn auto_server_side_compaction_emits_events_before_later_streamed_items() 
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn auto_server_side_compaction_preserves_raw_response_item_order() -> Result<()> {
+    skip_if_no_network!(Ok(()));
+
+    let compact_threshold = 120;
+    let inline_summary = summary_with_prefix("INLINE_SERVER_SUMMARY");
+
+    let harness = TestCodexHarness::with_builder(
+        test_codex()
+            .with_auth(CodexAuth::create_dummy_chatgpt_auth_for_testing())
+            .with_config(move |config| {
+                config
+                    .features
+                    .enable(Feature::ServerSideCompaction)
+                    .expect("enable server-side compaction");
+                config.model_auto_compact_token_limit = Some(compact_threshold);
+            }),
+    )
+    .await?;
+    let codex = harness.test().codex.clone();
+
+    responses::mount_sse_sequence(
+        harness.server(),
+        vec![
+            responses::sse(vec![
+                responses::ev_assistant_message("m1", "FIRST_REMOTE_REPLY"),
+                responses::ev_completed_with_tokens("resp-1", 500),
+            ]),
+            responses::sse(vec![
+                responses::ev_compaction(&inline_summary),
+                responses::ev_assistant_message("m2", "AFTER_INLINE_REPLY"),
+                responses::ev_completed("resp-2"),
+            ]),
+        ],
+    )
+    .await;
+
+    submit_text_turn_and_wait(&codex, "inline compact turn one").await?;
+
+    codex
+        .submit(Op::UserInput {
+            items: vec![UserInput::Text {
+                text: "inline compact turn two".to_string(),
+                text_elements: Vec::new(),
+            }],
+            final_output_json_schema: None,
+        })
+        .await?;
+
+    let mut event_index = 0usize;
+    let mut raw_compaction_index = None;
+    let mut raw_assistant_index = None;
+    let mut saw_turn_complete = false;
+    while !saw_turn_complete || raw_compaction_index.is_none() || raw_assistant_index.is_none() {
+        let event = codex.next_event().await.expect("event");
+        match event.msg {
+            EventMsg::RawResponseItem(raw)
+                if matches!(raw.item, ResponseItem::Compaction { .. }) =>
+            {
+                raw_compaction_index = Some(event_index);
+            }
+            EventMsg::RawResponseItem(raw)
+                if matches!(
+                    &raw.item,
+                    ResponseItem::Message { role, content, .. }
+                        if role == "assistant"
+                            && content.iter().any(|entry| {
+                                matches!(
+                                    entry,
+                                    ContentItem::OutputText { text }
+                                        if text == "AFTER_INLINE_REPLY"
+                                )
+                            })
+                ) =>
+            {
+                raw_assistant_index = Some(event_index);
+            }
+            EventMsg::TurnComplete(_) => {
+                saw_turn_complete = true;
+            }
+            _ => {}
+        }
+        event_index += 1;
+    }
+
+    assert!(
+        raw_compaction_index.expect("raw compaction event")
+            < raw_assistant_index.expect("raw assistant event"),
+        "expected raw response item notifications to preserve wire order"
+    );
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn auto_server_side_compaction_keeps_current_turn_inputs_for_follow_ups() -> Result<()> {
     skip_if_no_network!(Ok(()));
 
