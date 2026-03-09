@@ -5789,12 +5789,25 @@ fn build_server_side_compaction_replacement_history(
     let checkpoint_turn_items = history_at_checkpoint
         .strip_prefix(history_before_turn)
         .unwrap_or(history_at_checkpoint);
-    let checkpoint_turn_items = checkpoint_turn_items
-        .strip_prefix(turn_start_context_items)
-        .unwrap_or(checkpoint_turn_items);
-    let checkpoint_turn_items = checkpoint_turn_items
-        .strip_prefix(compaction_initial_context)
-        .unwrap_or(checkpoint_turn_items);
+    let stripped_compaction_initial_context =
+        checkpoint_turn_items.strip_prefix(compaction_initial_context);
+    let stripped_turn_start_context_items =
+        checkpoint_turn_items.strip_prefix(turn_start_context_items);
+    let checkpoint_turn_items = match (
+        stripped_compaction_initial_context,
+        stripped_turn_start_context_items,
+    ) {
+        (Some(after_compaction_initial_context), Some(after_turn_start_context_items)) => {
+            if compaction_initial_context.len() >= turn_start_context_items.len() {
+                after_compaction_initial_context
+            } else {
+                after_turn_start_context_items
+            }
+        }
+        (Some(after_compaction_initial_context), None) => after_compaction_initial_context,
+        (None, Some(after_turn_start_context_items)) => after_turn_start_context_items,
+        (None, None) => checkpoint_turn_items,
+    };
     let post_checkpoint_turn_items = current_history
         .strip_prefix(history_at_checkpoint)
         .unwrap_or_default();
