@@ -538,13 +538,6 @@ impl ModelClientSession {
             .inline_compaction_threshold
             .map(ApiContextManagement::compaction)
             .map(|entry| vec![entry]);
-        if let Some(threshold) = prompt.inline_compaction_threshold {
-            trace!(
-                model = %model_info.slug,
-                compact_threshold = threshold,
-                "attaching inline server-side compaction to responses request"
-            );
-        }
         let request = ResponsesApiRequest {
             model: model_info.slug.clone(),
             instructions: instructions.clone(),

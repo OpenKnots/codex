@@ -152,6 +152,9 @@ pub(crate) struct OutputItemResult {
 }
 
 pub(crate) struct PendingServerSideCompactionCheckpoint {
+    // Snapshot the raw history at the moment the compaction item streamed. We cannot build
+    // replacement history yet because later same-turn output may still arrive before
+    // `response.completed`.
     pub history_at_checkpoint: Vec<ResponseItem>,
     pub item: ResponseItem,
     pub turn_item: TurnItem,
@@ -191,6 +194,8 @@ pub(crate) async fn handle_output_item_done(
                 EventMsg::RawResponseItem(RawResponseItemEvent { item: item.clone() }),
             )
             .await;
+        // Replacement history is derived on `response.completed` from this snapshot plus whatever
+        // else the model streamed afterward.
         output.pending_server_side_compaction = Some(PendingServerSideCompactionCheckpoint {
             history_at_checkpoint: ctx.sess.clone_history().await.raw_items().to_vec(),
             item,
