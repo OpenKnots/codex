@@ -531,101 +531,89 @@ impl RolloutStore {
         state_db_ctx: Option<StateDbHandle>,
         state_builder: Option<ThreadMetadataBuilder>,
     ) -> std::io::Result<Self> {
-        let (
-            file,
-            deferred_log_file_info,
-            rollout_path,
-            source,
-            meta,
-            git_info_handle,
-            event_persistence_mode,
-        ) = match params {
-            RolloutStoreParams::Create {
-                conversation_id,
-                forked_from_id,
-                source,
-                base_instructions,
-                dynamic_tools,
-                event_persistence_mode,
-            } => {
-                let log_file_info = precompute_log_file_info(config, conversation_id)?;
-                let path = log_file_info.path.clone();
-                let session_id = log_file_info.conversation_id;
-                let started_at = log_file_info.timestamp;
-
-                let timestamp_format: &[FormatItem] = format_description!(
-                    "[year]-[month]-[day]T[hour]:[minute]:[second].[subsecond digits:3]Z"
-                );
-                let timestamp = started_at
-                    .to_offset(time::UtcOffset::UTC)
-                    .format(timestamp_format)
-                    .map_err(|e| IoError::other(format!("failed to format timestamp: {e}")))?;
-
-                let session_meta = SessionMeta {
-                    id: session_id,
+        let (file, deferred_log_file_info, rollout_path, source, meta, event_persistence_mode) =
+            match params {
+                RolloutStoreParams::Create {
+                    conversation_id,
                     forked_from_id,
-                    timestamp,
-                    cwd: config.cwd.clone(),
-                    originator: originator().value,
-                    cli_version: env!("CARGO_PKG_VERSION").to_string(),
-                    agent_nickname: source.get_nickname(),
-                    agent_role: source.get_agent_role(),
                     source,
-                    model_provider: Some(config.model_provider_id.clone()),
-                    base_instructions: Some(base_instructions),
-                    dynamic_tools: if dynamic_tools.is_empty() {
-                        None
-                    } else {
-                        Some(dynamic_tools)
-                    },
-                    memory_mode: (!config.memories.generate_memories)
-                        .then_some("disabled".to_string()),
-                };
-                let session_meta_line = SessionMetaLine {
-                    meta: session_meta,
-                    git: None,
-                };
-                let cwd = config.cwd.clone();
+                    base_instructions,
+                    dynamic_tools,
+                    event_persistence_mode,
+                } => {
+                    let log_file_info = precompute_log_file_info(config, conversation_id)?;
+                    let path = log_file_info.path.clone();
+                    let session_id = log_file_info.conversation_id;
+                    let started_at = log_file_info.timestamp;
 
-                (
-                    None,
-                    Some(log_file_info),
+                    let timestamp_format: &[FormatItem] = format_description!(
+                        "[year]-[month]-[day]T[hour]:[minute]:[second].[subsecond digits:3]Z"
+                    );
+                    let timestamp = started_at
+                        .to_offset(time::UtcOffset::UTC)
+                        .format(timestamp_format)
+                        .map_err(|e| IoError::other(format!("failed to format timestamp: {e}")))?;
+
+                    let session_meta = SessionMeta {
+                        id: session_id,
+                        forked_from_id,
+                        timestamp,
+                        cwd: config.cwd.clone(),
+                        originator: originator().value,
+                        cli_version: env!("CARGO_PKG_VERSION").to_string(),
+                        agent_nickname: source.get_nickname(),
+                        agent_role: source.get_agent_role(),
+                        source,
+                        model_provider: Some(config.model_provider_id.clone()),
+                        base_instructions: Some(base_instructions),
+                        dynamic_tools: if dynamic_tools.is_empty() {
+                            None
+                        } else {
+                            Some(dynamic_tools)
+                        },
+                        memory_mode: (!config.memories.generate_memories)
+                            .then_some("disabled".to_string()),
+                    };
+                    let session_meta_line = SessionMetaLine {
+                        meta: session_meta,
+                        git: None,
+                    };
+
+                    (
+                        None,
+                        Some(log_file_info),
+                        path,
+                        InMemoryRolloutSource::new(vec![RolloutItem::SessionMeta(
+                            session_meta_line.clone(),
+                        )]),
+                        Some(session_meta_line),
+                        event_persistence_mode,
+                    )
+                }
+                RolloutStoreParams::Resume {
                     path,
-                    InMemoryRolloutSource::new(vec![RolloutItem::SessionMeta(
-                        session_meta_line.clone(),
-                    )]),
-                    Some(session_meta_line),
-                    Some(tokio::task::spawn(async move {
-                        collect_git_info(cwd.as_path()).await
-                    })),
                     event_persistence_mode,
-                )
-            }
-            RolloutStoreParams::Resume {
-                path,
-                event_persistence_mode,
-                source,
-            } => {
-                let source = match source {
-                    Some(source) => source,
-                    None => Self::load_source(path.as_path()).await?.source,
-                };
-                (
-                    Some(
-                        tokio::fs::OpenOptions::new()
-                            .append(true)
-                            .open(&path)
-                            .await?,
-                    ),
-                    None,
-                    path,
                     source,
-                    None,
-                    None,
-                    event_persistence_mode,
-                )
-            }
-        };
+                } => {
+                    let source = match source {
+                        Some(source) => source,
+                        None => Self::load_source(path.as_path()).await?.source,
+                    };
+                    (
+                        Some(
+                            tokio::fs::OpenOptions::new()
+                                .append(true)
+                                .open(&path)
+                                .await?,
+                        ),
+                        None,
+                        path,
+                        source,
+                        None,
+                        event_persistence_mode,
+                    )
+                }
+            };
 
         // A reasonably-sized bounded channel. If the buffer fills up the send
         // future will yield, which is fine – we only need to ensure we do not
@@ -647,7 +635,6 @@ impl RolloutStore {
             state_db_ctx.clone(),
             state_builder,
             config.model_provider_id.clone(),
-            git_info_handle,
         ));
 
         Ok(Self {
@@ -923,7 +910,6 @@ async fn rollout_writer(
     state_db_ctx: Option<StateDbHandle>,
     mut state_builder: Option<ThreadMetadataBuilder>,
     default_provider: String,
-    mut git_info_handle: Option<tokio::task::JoinHandle<Option<codex_protocol::protocol::GitInfo>>>,
 ) -> std::io::Result<()> {
     let mut writer = file.map(|file| JsonlWriter { file });
     let mut buffered_items = Vec::<RolloutItem>::new();
@@ -942,7 +928,6 @@ async fn rollout_writer(
             state_db_ctx.as_deref(),
             &mut state_builder,
             default_provider.as_str(),
-            &mut git_info_handle,
         )
         .await?;
     }
@@ -1000,7 +985,6 @@ async fn rollout_writer(
                                 state_db_ctx.as_deref(),
                                 &mut state_builder,
                                 default_provider.as_str(),
-                                &mut git_info_handle,
                             )
                             .await?;
                         }
@@ -1067,21 +1051,9 @@ async fn write_session_meta(
     state_db_ctx: Option<&StateRuntime>,
     state_builder: &mut Option<ThreadMetadataBuilder>,
     default_provider: &str,
-    git_info_handle: &mut Option<
-        tokio::task::JoinHandle<Option<codex_protocol::protocol::GitInfo>>,
-    >,
 ) -> std::io::Result<()> {
     if session_meta_line.git.is_none() {
-        session_meta_line.git = match git_info_handle.take() {
-            Some(handle) => match handle.await {
-                Ok(git_info) => git_info,
-                Err(err) => {
-                    warn!("failed waiting for startup git info: {err}");
-                    collect_git_info(&session_meta_line.meta.cwd).await
-                }
-            },
-            None => collect_git_info(&session_meta_line.meta.cwd).await,
-        };
+        session_meta_line.git = collect_git_info(&session_meta_line.meta.cwd).await;
     }
     let memory_mode = session_meta_line.meta.memory_mode.clone();
     if state_db_ctx.is_some() {
