@@ -506,6 +506,96 @@ async fn auto_server_side_compaction_uses_inline_context_management() -> Result<
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn auto_server_side_compaction_emits_events_before_later_streamed_items() -> Result<()> {
+    skip_if_no_network!(Ok(()));
+
+    let compact_threshold = 120;
+    let harness = TestCodexHarness::with_builder(
+        test_codex()
+            .with_auth(CodexAuth::create_dummy_chatgpt_auth_for_testing())
+            .with_config(move |config| {
+                config
+                    .features
+                    .enable(Feature::ServerSideCompaction)
+                    .expect("enable server-side compaction");
+                config.model_auto_compact_token_limit = Some(compact_threshold);
+            }),
+    )
+    .await?;
+    let codex = harness.test().codex.clone();
+
+    let _responses_mock = responses::mount_sse_sequence(
+        harness.server(),
+        vec![
+            responses::sse(vec![
+                responses::ev_assistant_message("m1", "FIRST_REMOTE_REPLY"),
+                responses::ev_completed_with_tokens("resp-1", 500),
+            ]),
+            responses::sse(vec![
+                responses::ev_compaction(&summary_with_prefix("INLINE_SERVER_SUMMARY")),
+                responses::ev_assistant_message("m2", "AFTER_INLINE_REPLY"),
+                responses::ev_completed_with_tokens("resp-2", 80),
+            ]),
+        ],
+    )
+    .await;
+
+    submit_text_turn_and_wait(&codex, "inline compact turn one").await?;
+
+    codex
+        .submit(Op::UserInput {
+            items: vec![UserInput::Text {
+                text: "inline compact turn two".to_string(),
+                text_elements: Vec::new(),
+            }],
+            final_output_json_schema: None,
+        })
+        .await?;
+
+    let mut event_index = 0usize;
+    let mut context_compacted_index = None;
+    let mut assistant_completed_index = None;
+    let mut saw_turn_complete = false;
+    while !saw_turn_complete
+        || context_compacted_index.is_none()
+        || assistant_completed_index.is_none()
+    {
+        let event = codex.next_event().await.expect("event");
+        match event.msg {
+            EventMsg::ContextCompacted(_) => {
+                context_compacted_index = Some(event_index);
+            }
+            EventMsg::ItemCompleted(ItemCompletedEvent {
+                item: TurnItem::AgentMessage(item),
+                ..
+            }) if item.content.iter().any(|entry| {
+                matches!(
+                    entry,
+                    codex_protocol::items::AgentMessageContent::Text { text }
+                        if text == "AFTER_INLINE_REPLY"
+                )
+            }) =>
+            {
+                assistant_completed_index = Some(event_index);
+            }
+            EventMsg::TurnComplete(_) => {
+                saw_turn_complete = true;
+            }
+            _ => {}
+        }
+        event_index += 1;
+    }
+
+    assert!(
+        context_compacted_index.expect("context compacted event")
+            < assistant_completed_index.expect("assistant completed event"),
+        "expected the inline compaction event to arrive before later streamed assistant items"
+    );
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn auto_server_side_compaction_keeps_current_turn_inputs_for_follow_ups() -> Result<()> {
     skip_if_no_network!(Ok(()));
 
@@ -599,6 +689,110 @@ async fn auto_server_side_compaction_keeps_current_turn_inputs_for_follow_ups() 
                 .find("call-inline-mid-turn")
                 .expect("post-compaction tool call in follow-up request"),
         "expected the inline compaction item to remain ahead of post-compaction tool calls"
+    );
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn auto_server_side_compaction_preserves_recomputed_token_estimate() -> Result<()> {
+    skip_if_no_network!(Ok(()));
+
+    let compact_threshold = 120;
+    let inline_summary = summary_with_prefix("INLINE_SERVER_SUMMARY");
+
+    let harness = TestCodexHarness::with_builder(
+        test_codex()
+            .with_auth(CodexAuth::create_dummy_chatgpt_auth_for_testing())
+            .with_config(move |config| {
+                config
+                    .features
+                    .enable(Feature::ServerSideCompaction)
+                    .expect("enable server-side compaction");
+                config.model_auto_compact_token_limit = Some(compact_threshold);
+            }),
+    )
+    .await?;
+    let codex = harness.test().codex.clone();
+
+    let responses_mock = responses::mount_sse_sequence(
+        harness.server(),
+        vec![
+            responses::sse(vec![
+                responses::ev_assistant_message("m1", "FIRST_REMOTE_REPLY"),
+                responses::ev_completed_with_tokens("resp-1", 500),
+            ]),
+            responses::sse(vec![
+                responses::ev_compaction(&inline_summary),
+                responses::ev_function_call(
+                    "call-inline-stale-token-usage",
+                    DUMMY_FUNCTION_NAME,
+                    "{}",
+                ),
+                responses::ev_completed_with_tokens("resp-2", 500),
+            ]),
+            responses::sse(vec![
+                responses::ev_assistant_message("m3", "AFTER_INLINE_TOOL_REPLY"),
+                responses::ev_completed("resp-3"),
+            ]),
+        ],
+    )
+    .await;
+
+    codex
+        .submit(Op::UserInput {
+            items: vec![UserInput::Text {
+                text: "inline compact turn one".to_string(),
+                text_elements: Vec::new(),
+            }],
+            final_output_json_schema: None,
+        })
+        .await?;
+    wait_for_event(&codex, |event| matches!(event, EventMsg::TurnComplete(_))).await;
+
+    codex
+        .submit(Op::UserInput {
+            items: vec![UserInput::Text {
+                text: "inline compact turn two".to_string(),
+                text_elements: Vec::new(),
+            }],
+            final_output_json_schema: None,
+        })
+        .await?;
+
+    let mut saw_turn_complete = false;
+    let mut token_usage_events = Vec::new();
+    while !saw_turn_complete {
+        let event = codex.next_event().await.expect("event");
+        match event.msg {
+            EventMsg::TokenCount(token_count) => {
+                if let Some(last_token_usage) = token_count
+                    .info
+                    .as_ref()
+                    .map(|info| info.last_token_usage.total_tokens)
+                {
+                    token_usage_events.push(last_token_usage);
+                }
+            }
+            EventMsg::TurnComplete(_) => {
+                saw_turn_complete = true;
+            }
+            _ => {}
+        }
+    }
+
+    let requests = responses_mock.requests();
+    assert_eq!(
+        requests.len(),
+        3,
+        "expected initial request, inline-compacted tool call, and same-turn follow-up"
+    );
+    assert!(
+        token_usage_events
+            .iter()
+            .copied()
+            .any(|tokens| tokens > 500),
+        "expected a post-compaction token event to keep the recomputed local estimate instead of reverting to the provider-reported total: {token_usage_events:?}"
     );
 
     Ok(())

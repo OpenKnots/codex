@@ -7185,14 +7185,12 @@ async fn try_run_sampling_request(
                     &mut assistant_message_stream_parsers,
                 )
                 .await;
+                let mut applied_server_side_compaction_checkpoint = false;
                 if let Some(PendingServerSideCompactionCheckpoint {
                     history_at_checkpoint,
                     item,
-                    turn_item,
                 }) = pending_server_side_compaction_checkpoint.take()
                 {
-                    let turn_item = TurnItem::ContextCompaction(turn_item);
-                    sess.emit_turn_item_started(&turn_context, &turn_item).await;
                     sess.apply_server_side_compaction_checkpoint(
                         turn_context.as_ref(),
                         item,
@@ -7202,11 +7200,12 @@ async fn try_run_sampling_request(
                         history_at_checkpoint.as_slice(),
                     )
                     .await;
-                    sess.emit_turn_item_completed(&turn_context, turn_item)
+                    applied_server_side_compaction_checkpoint = true;
+                }
+                if !applied_server_side_compaction_checkpoint {
+                    sess.update_token_usage_info(&turn_context, token_usage.as_ref())
                         .await;
                 }
-                sess.update_token_usage_info(&turn_context, token_usage.as_ref())
-                    .await;
                 should_emit_turn_diff = true;
 
                 needs_follow_up |= sess.has_pending_input().await;

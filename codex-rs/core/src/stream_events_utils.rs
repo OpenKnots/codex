@@ -152,7 +152,6 @@ pub(crate) struct OutputItemResult {
 pub(crate) struct PendingServerSideCompactionCheckpoint {
     pub history_at_checkpoint: Vec<ResponseItem>,
     pub item: ResponseItem,
-    pub turn_item: ContextCompactionItem,
 }
 
 pub(crate) struct HandleOutputCtx {
@@ -172,18 +171,23 @@ pub(crate) async fn handle_output_item_done(
     let plan_mode = ctx.turn_context.collaboration_mode.mode == ModeKind::Plan;
 
     if matches!(item, ResponseItem::Compaction { .. }) {
-        let compaction_item = match previously_active_item {
+        let turn_item = TurnItem::ContextCompaction(match previously_active_item {
             Some(TurnItem::ContextCompaction(item)) => item,
             _ => ContextCompactionItem::new(),
-        };
+        });
         debug!(
             turn_id = %ctx.turn_context.sub_id,
-            "buffering streamed server-side compaction item until response.completed"
+            "emitting streamed server-side compaction item and buffering history rewrite until response.completed"
         );
+        ctx.sess
+            .emit_turn_item_started(&ctx.turn_context, &turn_item)
+            .await;
+        ctx.sess
+            .emit_turn_item_completed(&ctx.turn_context, turn_item)
+            .await;
         output.pending_server_side_compaction = Some(PendingServerSideCompactionCheckpoint {
             history_at_checkpoint: ctx.sess.clone_history().await.raw_items().to_vec(),
             item,
-            turn_item: compaction_item,
         });
         return Ok(output);
     }
