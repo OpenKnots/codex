@@ -586,6 +586,101 @@ async fn auto_server_side_compaction_keeps_current_turn_inputs_for_follow_ups() 
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn auto_server_side_compaction_follow_up_preserves_model_switch_updates() -> Result<()> {
+    skip_if_no_network!(Ok(()));
+
+    let compact_threshold = 120;
+    let previous_model = "gpt-5.2-codex";
+    let next_model = "gpt-5.1-codex-max";
+    let inline_summary = summary_with_prefix("INLINE_SWITCH_SUMMARY");
+    let server = wiremock::MockServer::start().await;
+    let _models_mock = responses::mount_models_once(
+        &server,
+        ModelsResponse {
+            models: vec![
+                model_info_with_context_window(previous_model, 273_000),
+                model_info_with_context_window(next_model, 273_000),
+            ],
+        },
+    )
+    .await;
+    let responses_mock = responses::mount_sse_sequence(
+        &server,
+        vec![
+            responses::sse(vec![
+                responses::ev_assistant_message("m1", "FIRST_REMOTE_REPLY"),
+                responses::ev_completed_with_tokens("resp-1", 500),
+            ]),
+            responses::sse(vec![
+                responses::ev_compaction(&inline_summary),
+                responses::ev_function_call("call-inline-model-switch", DUMMY_FUNCTION_NAME, "{}"),
+                responses::ev_completed_with_tokens("resp-2", 80),
+            ]),
+            responses::sse(vec![
+                responses::ev_assistant_message("m3", "AFTER_INLINE_SWITCH_TOOL_REPLY"),
+                responses::ev_completed("resp-3"),
+            ]),
+        ],
+    )
+    .await;
+
+    let test = test_codex()
+        .with_auth(CodexAuth::create_dummy_chatgpt_auth_for_testing())
+        .with_model(previous_model)
+        .with_config(move |config| {
+            config
+                .features
+                .enable(Feature::ServerSideCompaction)
+                .expect("enable server-side compaction");
+            config.model_auto_compact_token_limit = Some(compact_threshold);
+        })
+        .build(&server)
+        .await?;
+    let codex = test.codex.clone();
+
+    submit_text_turn_and_wait(&codex, "BEFORE_SWITCH_USER").await?;
+
+    codex
+        .submit(Op::OverrideTurnContext {
+            cwd: None,
+            approval_policy: None,
+            sandbox_policy: None,
+            windows_sandbox_level: None,
+            model: Some(next_model.to_string()),
+            effort: None,
+            summary: None,
+            service_tier: None,
+            collaboration_mode: None,
+            personality: None,
+        })
+        .await?;
+    submit_text_turn_and_wait(&codex, "AFTER_SWITCH_USER").await?;
+
+    let requests = responses_mock.requests();
+    assert_eq!(
+        requests.len(),
+        3,
+        "expected initial request, switched-model inline compaction request, and same-turn follow-up"
+    );
+
+    let follow_up_request = &requests[2];
+    assert!(
+        follow_up_request.body_contains_text(&inline_summary),
+        "expected same-turn follow-up to include the inline compaction item"
+    );
+    assert!(
+        follow_up_request.body_contains_text("AFTER_SWITCH_USER"),
+        "expected same-turn follow-up to retain the switched-model user input"
+    );
+    assert!(
+        follow_up_request.body_contains_text("<model_switch>"),
+        "expected same-turn follow-up to preserve the original model switch update"
+    );
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn auto_server_side_compaction_retries_without_committing_incomplete_checkpoint() -> Result<()>
 {
     skip_if_no_network!(Ok(()));

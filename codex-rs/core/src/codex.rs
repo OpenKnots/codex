@@ -3182,13 +3182,15 @@ impl Session {
         &self,
         turn_context: &TurnContext,
         item: ResponseItem,
+        compaction_initial_context: &[ResponseItem],
+        turn_start_context_items: &[ResponseItem],
         history_before_turn: &[ResponseItem],
     ) {
         let current_history = self.clone_history().await;
-        let initial_context = self.build_initial_context(turn_context).await;
         let replacement_history = build_server_side_compaction_replacement_history(
             item.clone(),
-            initial_context,
+            compaction_initial_context,
+            turn_start_context_items,
             history_before_turn,
             current_history.raw_items(),
         );
@@ -5333,7 +5335,9 @@ pub(crate) async fn run_turn(
     let skills_outcome = Some(turn_context.turn_skills.outcome.as_ref());
 
     let history_before_turn = sess.clone_history().await.raw_items().to_vec();
-    sess.record_context_updates_and_set_reference_context_item(turn_context.as_ref())
+    let compaction_initial_context = sess.build_initial_context(turn_context.as_ref()).await;
+    let turn_start_context_items = sess
+        .record_context_updates_and_set_reference_context_item(turn_context.as_ref())
         .await;
 
     let loaded_plugins = sess
@@ -5565,6 +5569,8 @@ pub(crate) async fn run_turn(
             &mut client_session,
             turn_metadata_header.as_deref(),
             sampling_request_input,
+            &compaction_initial_context,
+            &turn_start_context_items,
             &history_before_turn,
             inline_compaction_for_request.map(|pending| pending.threshold),
             &turn_enabled_connectors,
@@ -5775,31 +5781,27 @@ struct PendingServerSideCompaction {
 
 fn build_server_side_compaction_replacement_history(
     compaction_item: ResponseItem,
-    initial_context: Vec<ResponseItem>,
+    compaction_initial_context: &[ResponseItem],
+    turn_start_context_items: &[ResponseItem],
     history_before_turn: &[ResponseItem],
     current_history: &[ResponseItem],
 ) -> Vec<ResponseItem> {
     let current_turn_items = current_history
         .strip_prefix(history_before_turn)
-        .or_else(|| current_history.strip_prefix(initial_context.as_slice()))
         .unwrap_or(current_history);
+    let current_turn_items = current_turn_items
+        .strip_prefix(turn_start_context_items)
+        .unwrap_or(current_turn_items);
     let mut replacement_history: Vec<ResponseItem> = current_turn_items
         .iter()
         .filter(|item| !matches!(item, ResponseItem::GhostSnapshot { .. }))
         .filter(|item| !matches!(item, ResponseItem::Compaction { .. }))
-        .filter(|item| match item {
-            ResponseItem::Message { role, .. } if role == "developer" => false,
-            ResponseItem::Message { role, content, .. } if role == "user" => {
-                !crate::event_mapping::is_contextual_user_message_content(content)
-            }
-            _ => true,
-        })
         .cloned()
         .collect();
     replacement_history.push(compaction_item);
     let mut replacement_history = insert_initial_context_before_last_real_user_or_summary(
         replacement_history,
-        initial_context,
+        compaction_initial_context.to_vec(),
     );
     replacement_history.extend(
         current_history
@@ -6181,6 +6183,8 @@ async fn run_sampling_request(
     client_session: &mut ModelClientSession,
     turn_metadata_header: Option<&str>,
     input: Vec<ResponseItem>,
+    compaction_initial_context: &[ResponseItem],
+    turn_start_context_items: &[ResponseItem],
     history_before_turn: &[ResponseItem],
     inline_compaction_threshold: Option<i64>,
     explicitly_enabled_connectors: &HashSet<String>,
@@ -6218,6 +6222,8 @@ async fn run_sampling_request(
             Arc::clone(&turn_diff_tracker),
             server_model_warning_emitted_for_turn,
             &prompt,
+            compaction_initial_context,
+            turn_start_context_items,
             history_before_turn,
             cancellation_token.child_token(),
         )
@@ -6941,6 +6947,8 @@ async fn try_run_sampling_request(
     turn_diff_tracker: SharedTurnDiffTracker,
     server_model_warning_emitted_for_turn: &mut bool,
     prompt: &Prompt,
+    compaction_initial_context: &[ResponseItem],
+    turn_start_context_items: &[ResponseItem],
     history_before_turn: &[ResponseItem],
     cancellation_token: CancellationToken,
 ) -> CodexResult<SamplingRequestResult> {
@@ -7172,6 +7180,8 @@ async fn try_run_sampling_request(
                     sess.apply_server_side_compaction_checkpoint(
                         turn_context.as_ref(),
                         item,
+                        compaction_initial_context,
+                        turn_start_context_items,
                         history_before_turn.as_slice(),
                     )
                     .await;
