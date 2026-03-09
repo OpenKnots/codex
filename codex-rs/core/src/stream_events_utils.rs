@@ -145,7 +145,13 @@ pub(crate) type InFlightFuture<'f> =
 pub(crate) struct OutputItemResult {
     pub last_agent_message: Option<String>,
     pub needs_follow_up: bool,
+    pub pending_server_side_compaction: Option<PendingServerSideCompactionCheckpoint>,
     pub tool_future: Option<InFlightFuture<'static>>,
+}
+
+pub(crate) struct PendingServerSideCompactionCheckpoint {
+    pub item: ResponseItem,
+    pub turn_item: ContextCompactionItem,
 }
 
 pub(crate) struct HandleOutputCtx {
@@ -153,7 +159,6 @@ pub(crate) struct HandleOutputCtx {
     pub turn_context: Arc<TurnContext>,
     pub tool_runtime: ToolCallRuntime,
     pub cancellation_token: CancellationToken,
-    pub history_before_turn: Arc<Vec<ResponseItem>>,
 }
 
 #[instrument(level = "trace", skip_all)]
@@ -166,39 +171,18 @@ pub(crate) async fn handle_output_item_done(
     let plan_mode = ctx.turn_context.collaboration_mode.mode == ModeKind::Plan;
 
     if matches!(item, ResponseItem::Compaction { .. }) {
-        let had_active_compaction = matches!(
-            previously_active_item.as_ref(),
-            Some(TurnItem::ContextCompaction(_))
-        );
         let compaction_item = match previously_active_item {
             Some(TurnItem::ContextCompaction(item)) => item,
             _ => ContextCompactionItem::new(),
         };
-        if !had_active_compaction {
-            ctx.sess
-                .emit_turn_item_started(
-                    &ctx.turn_context,
-                    &TurnItem::ContextCompaction(compaction_item.clone()),
-                )
-                .await;
-        }
         debug!(
             turn_id = %ctx.turn_context.sub_id,
-            "processing streamed server-side compaction item"
+            "buffering streamed server-side compaction item until response.completed"
         );
-        ctx.sess
-            .apply_server_side_compaction_checkpoint(
-                ctx.turn_context.as_ref(),
-                item,
-                ctx.history_before_turn.as_slice(),
-            )
-            .await;
-        ctx.sess
-            .emit_turn_item_completed(
-                &ctx.turn_context,
-                TurnItem::ContextCompaction(compaction_item),
-            )
-            .await;
+        output.pending_server_side_compaction = Some(PendingServerSideCompactionCheckpoint {
+            item,
+            turn_item: compaction_item,
+        });
         return Ok(output);
     }
 

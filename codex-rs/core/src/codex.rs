@@ -41,6 +41,7 @@ use crate::realtime_conversation::handle_start as handle_realtime_conversation_s
 use crate::realtime_conversation::handle_text as handle_realtime_conversation_text;
 use crate::rollout::session_index;
 use crate::stream_events_utils::HandleOutputCtx;
+use crate::stream_events_utils::PendingServerSideCompactionCheckpoint;
 use crate::stream_events_utils::handle_non_tool_response_item;
 use crate::stream_events_utils::handle_output_item_done;
 use crate::stream_events_utils::last_assistant_message_from_item;
@@ -5920,10 +5921,6 @@ async fn maybe_run_previous_model_inline_compact(
     turn_context: &Arc<TurnContext>,
     total_usage_tokens: i64,
 ) -> CodexResult<bool> {
-    if inline_server_side_compaction_threshold(sess, turn_context).is_some() {
-        return Ok(false);
-    }
-
     let Some(previous_turn_settings) = sess.previous_turn_settings().await else {
         return Ok(false);
     };
@@ -6976,6 +6973,9 @@ async fn try_run_sampling_request(
     let mut needs_follow_up = false;
     let mut last_agent_message: Option<String> = None;
     let mut observed_server_side_compaction = false;
+    let mut pending_server_side_compaction_checkpoint: Option<
+        PendingServerSideCompactionCheckpoint,
+    > = None;
     let mut active_item: Option<TurnItem> = None;
     let mut should_emit_turn_diff = false;
     let plan_mode = turn_context.collaboration_mode.mode == ModeKind::Plan;
@@ -7054,13 +7054,15 @@ async fn try_run_sampling_request(
                     turn_context: turn_context.clone(),
                     tool_runtime: tool_runtime.clone(),
                     cancellation_token: cancellation_token.child_token(),
-                    history_before_turn: history_before_turn.clone(),
                 };
 
                 let output_result = handle_output_item_done(&mut ctx, item, previously_active_item)
                     .instrument(handle_responses)
                     .await?;
                 observed_server_side_compaction |= saw_server_side_compaction;
+                if let Some(pending_compaction) = output_result.pending_server_side_compaction {
+                    pending_server_side_compaction_checkpoint = Some(pending_compaction);
+                }
                 if let Some(tool_future) = output_result.tool_future {
                     in_flight.push_back(tool_future);
                 }
@@ -7074,6 +7076,10 @@ async fn try_run_sampling_request(
                     handle_non_tool_response_item(&item, plan_mode, Some(&turn_context.cwd)).await
                 {
                     let mut turn_item = turn_item;
+                    if matches!(turn_item, TurnItem::ContextCompaction(_)) {
+                        active_item = Some(turn_item);
+                        continue;
+                    }
                     let mut seeded_parsed: Option<ParsedAssistantTextDelta> = None;
                     let mut seeded_item_id: Option<String> = None;
                     if matches!(turn_item, TurnItem::AgentMessage(_))
@@ -7154,6 +7160,20 @@ async fn try_run_sampling_request(
                     &mut assistant_message_stream_parsers,
                 )
                 .await;
+                if let Some(PendingServerSideCompactionCheckpoint { item, turn_item }) =
+                    pending_server_side_compaction_checkpoint.take()
+                {
+                    let turn_item = TurnItem::ContextCompaction(turn_item);
+                    sess.emit_turn_item_started(&turn_context, &turn_item).await;
+                    sess.apply_server_side_compaction_checkpoint(
+                        turn_context.as_ref(),
+                        item,
+                        history_before_turn.as_slice(),
+                    )
+                    .await;
+                    sess.emit_turn_item_completed(&turn_context, turn_item)
+                        .await;
+                }
                 sess.update_token_usage_info(&turn_context, token_usage.as_ref())
                     .await;
                 should_emit_turn_diff = true;
