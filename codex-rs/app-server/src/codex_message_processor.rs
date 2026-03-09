@@ -1819,28 +1819,6 @@ impl CodexMessageProcessor {
             personality,
         );
         typesafe_overrides.ephemeral = ephemeral;
-        let thread_start_span = tracing::info_span!(
-            "app_server.thread_start",
-            otel.name = "app_server.thread_start",
-            thread_start.request_config_override_count = config.as_ref().map_or(0, HashMap::len),
-            thread_start.dynamic_tool_count = dynamic_tools.as_ref().map_or(0, Vec::len),
-            thread_start.has_model_override = typesafe_overrides.model.is_some(),
-            thread_start.has_model_provider_override = typesafe_overrides.model_provider.is_some(),
-            thread_start.has_service_tier_override = typesafe_overrides.service_tier.is_some(),
-            thread_start.has_cwd_override = typesafe_overrides.cwd.is_some(),
-            thread_start.has_approval_policy_override =
-                typesafe_overrides.approval_policy.is_some(),
-            thread_start.has_sandbox_override = typesafe_overrides.sandbox_mode.is_some(),
-            thread_start.has_base_instructions_override =
-                typesafe_overrides.base_instructions.is_some(),
-            thread_start.has_developer_instructions_override =
-                typesafe_overrides.developer_instructions.is_some(),
-            thread_start.has_personality_override = typesafe_overrides.personality.is_some(),
-            thread_start.has_service_name = service_name.is_some(),
-            thread_start.persist_extended_history = persist_extended_history,
-            thread_start.experimental_raw_events = experimental_raw_events,
-            thread_start.ephemeral = ephemeral,
-        );
         let cli_overrides = self.cli_overrides.clone();
         let cloud_requirements = self.current_cloud_requirements();
         let listener_task_context = ListenerTaskContext {
@@ -1851,25 +1829,19 @@ impl CodexMessageProcessor {
             fallback_model_provider: self.config.model_provider_id.clone(),
             codex_home: self.config.codex_home.clone(),
         };
-
-        tokio::spawn(
-            async move {
-                Self::thread_start_task(
-                    listener_task_context,
-                    cli_overrides,
-                    cloud_requirements,
-                    request_id,
-                    config,
-                    typesafe_overrides,
-                    dynamic_tools,
-                    persist_extended_history,
-                    service_name,
-                    experimental_raw_events,
-                )
-                .await;
-            }
-            .instrument(thread_start_span),
-        );
+        Self::thread_start_task(
+            listener_task_context,
+            cli_overrides,
+            cloud_requirements,
+            request_id,
+            config,
+            typesafe_overrides,
+            dynamic_tools,
+            persist_extended_history,
+            service_name,
+            experimental_raw_events,
+        )
+        .await;
     }
 
     #[allow(clippy::too_many_arguments)]
