@@ -5792,6 +5792,9 @@ fn build_server_side_compaction_replacement_history(
     let checkpoint_turn_items = checkpoint_turn_items
         .strip_prefix(turn_start_context_items)
         .unwrap_or(checkpoint_turn_items);
+    let checkpoint_turn_items = checkpoint_turn_items
+        .strip_prefix(compaction_initial_context)
+        .unwrap_or(checkpoint_turn_items);
     let post_checkpoint_turn_items = current_history
         .strip_prefix(history_at_checkpoint)
         .unwrap_or_default();

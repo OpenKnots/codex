@@ -470,6 +470,60 @@ fn build_server_side_compaction_replacement_history_replaces_prior_summary_with_
 }
 
 #[test]
+fn build_server_side_compaction_replacement_history_reuses_existing_initial_context_once() {
+    let history_before_turn = vec![user_message("earlier")];
+    let compaction_initial_context = vec![
+        developer_message("fresh permissions"),
+        environment_context_message("/fresh"),
+    ];
+    let turn_start_context_items = Vec::new();
+    let current_turn_user = user_message("current turn");
+    let prior_compaction = ResponseItem::Compaction {
+        encrypted_content: "INLINE_SUMMARY_1".to_string(),
+    };
+    let new_compaction = ResponseItem::Compaction {
+        encrypted_content: "INLINE_SUMMARY_2".to_string(),
+    };
+    let current_turn_tool_output = ResponseItem::FunctionCallOutput {
+        call_id: "call-1".to_string(),
+        output: FunctionCallOutputPayload::from_text("tool result".to_string()),
+    };
+    let history_at_checkpoint = vec![
+        compaction_initial_context[0].clone(),
+        compaction_initial_context[1].clone(),
+        current_turn_user.clone(),
+        prior_compaction,
+    ];
+    let current_history = vec![
+        history_at_checkpoint[0].clone(),
+        history_at_checkpoint[1].clone(),
+        history_at_checkpoint[2].clone(),
+        history_at_checkpoint[3].clone(),
+        current_turn_tool_output.clone(),
+    ];
+
+    let replacement_history = build_server_side_compaction_replacement_history(
+        new_compaction.clone(),
+        &compaction_initial_context,
+        &turn_start_context_items,
+        &history_before_turn,
+        &history_at_checkpoint,
+        &current_history,
+    );
+
+    assert_eq!(
+        replacement_history,
+        vec![
+            compaction_initial_context[0].clone(),
+            compaction_initial_context[1].clone(),
+            current_turn_user,
+            new_compaction,
+            current_turn_tool_output,
+        ]
+    );
+}
+
+#[test]
 fn build_server_side_compaction_replacement_history_keeps_checkpoint_before_post_compaction_items()
 {
     let prior_snapshot = ghost_snapshot("ghost-before");
