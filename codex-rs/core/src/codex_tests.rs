@@ -291,6 +291,7 @@ fn build_server_side_compaction_replacement_history_keeps_current_turn_inputs() 
         &turn_start_context_items,
         &history_before_turn,
         &current_history,
+        &current_history,
     );
 
     assert_eq!(
@@ -346,6 +347,7 @@ fn build_server_side_compaction_replacement_history_preserves_turn_scoped_inject
         &turn_start_context_items,
         &history_before_turn,
         &current_history,
+        &current_history,
     );
 
     assert_eq!(
@@ -400,6 +402,7 @@ fn build_server_side_compaction_replacement_history_replaces_prior_same_turn_sum
         &turn_start_context_items,
         &history_before_turn,
         &current_history,
+        &current_history,
     );
 
     assert_eq!(
@@ -450,6 +453,7 @@ fn build_server_side_compaction_replacement_history_replaces_prior_summary_with_
         &turn_start_context_items,
         &history_before_turn,
         &current_history,
+        &current_history,
     );
 
     assert_eq!(
@@ -460,6 +464,66 @@ fn build_server_side_compaction_replacement_history_replaces_prior_summary_with_
             current_turn_user,
             current_turn_tool_output,
             new_compaction,
+            same_turn_snapshot,
+        ]
+    );
+}
+
+#[test]
+fn build_server_side_compaction_replacement_history_keeps_checkpoint_before_post_compaction_items()
+{
+    let prior_snapshot = ghost_snapshot("ghost-before");
+    let same_turn_snapshot = ghost_snapshot("ghost-during");
+    let history_before_turn = vec![user_message("earlier"), prior_snapshot.clone()];
+    let turn_start_context_items = vec![
+        developer_message("fresh permissions"),
+        environment_context_message("/fresh"),
+    ];
+    let current_turn_user = user_message("current turn");
+    let post_checkpoint_tool_call = ResponseItem::FunctionCall {
+        id: None,
+        call_id: "call-1".to_string(),
+        name: "test_tool".to_string(),
+        arguments: "{}".to_string(),
+    };
+    let history_at_checkpoint = vec![
+        user_message("earlier"),
+        prior_snapshot.clone(),
+        turn_start_context_items[0].clone(),
+        turn_start_context_items[1].clone(),
+        current_turn_user.clone(),
+    ];
+    let current_history = vec![
+        history_at_checkpoint[0].clone(),
+        history_at_checkpoint[1].clone(),
+        history_at_checkpoint[2].clone(),
+        history_at_checkpoint[3].clone(),
+        history_at_checkpoint[4].clone(),
+        post_checkpoint_tool_call.clone(),
+        same_turn_snapshot.clone(),
+    ];
+    let compaction_item = ResponseItem::Compaction {
+        encrypted_content: "INLINE_SUMMARY".to_string(),
+    };
+
+    let replacement_history = build_server_side_compaction_replacement_history(
+        compaction_item.clone(),
+        &turn_start_context_items,
+        &turn_start_context_items,
+        &history_before_turn,
+        &history_at_checkpoint,
+        &current_history,
+    );
+
+    assert_eq!(
+        replacement_history,
+        vec![
+            turn_start_context_items[0].clone(),
+            turn_start_context_items[1].clone(),
+            current_turn_user,
+            compaction_item,
+            post_checkpoint_tool_call,
+            prior_snapshot,
             same_turn_snapshot,
         ]
     );

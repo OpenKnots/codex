@@ -3185,6 +3185,7 @@ impl Session {
         compaction_initial_context: &[ResponseItem],
         turn_start_context_items: &[ResponseItem],
         history_before_turn: &[ResponseItem],
+        history_at_checkpoint: &[ResponseItem],
     ) {
         let current_history = self.clone_history().await;
         let replacement_history = build_server_side_compaction_replacement_history(
@@ -3192,6 +3193,7 @@ impl Session {
             compaction_initial_context,
             turn_start_context_items,
             history_before_turn,
+            history_at_checkpoint,
             current_history.raw_items(),
         );
 
@@ -5784,21 +5786,32 @@ fn build_server_side_compaction_replacement_history(
     compaction_initial_context: &[ResponseItem],
     turn_start_context_items: &[ResponseItem],
     history_before_turn: &[ResponseItem],
+    history_at_checkpoint: &[ResponseItem],
     current_history: &[ResponseItem],
 ) -> Vec<ResponseItem> {
-    let current_turn_items = current_history
+    let checkpoint_turn_items = history_at_checkpoint
         .strip_prefix(history_before_turn)
-        .unwrap_or(current_history);
-    let current_turn_items = current_turn_items
+        .unwrap_or(history_at_checkpoint);
+    let checkpoint_turn_items = checkpoint_turn_items
         .strip_prefix(turn_start_context_items)
-        .unwrap_or(current_turn_items);
-    let mut replacement_history: Vec<ResponseItem> = current_turn_items
+        .unwrap_or(checkpoint_turn_items);
+    let post_checkpoint_turn_items = current_history
+        .strip_prefix(history_at_checkpoint)
+        .unwrap_or_default();
+    let mut replacement_history: Vec<ResponseItem> = checkpoint_turn_items
         .iter()
         .filter(|item| !matches!(item, ResponseItem::GhostSnapshot { .. }))
         .filter(|item| !matches!(item, ResponseItem::Compaction { .. }))
         .cloned()
         .collect();
     replacement_history.push(compaction_item);
+    replacement_history.extend(
+        post_checkpoint_turn_items
+            .iter()
+            .filter(|item| !matches!(item, ResponseItem::GhostSnapshot { .. }))
+            .filter(|item| !matches!(item, ResponseItem::Compaction { .. }))
+            .cloned(),
+    );
     let mut replacement_history = insert_initial_context_before_last_real_user_or_summary(
         replacement_history,
         compaction_initial_context.to_vec(),
@@ -7172,8 +7185,11 @@ async fn try_run_sampling_request(
                     &mut assistant_message_stream_parsers,
                 )
                 .await;
-                if let Some(PendingServerSideCompactionCheckpoint { item, turn_item }) =
-                    pending_server_side_compaction_checkpoint.take()
+                if let Some(PendingServerSideCompactionCheckpoint {
+                    history_at_checkpoint,
+                    item,
+                    turn_item,
+                }) = pending_server_side_compaction_checkpoint.take()
                 {
                     let turn_item = TurnItem::ContextCompaction(turn_item);
                     sess.emit_turn_item_started(&turn_context, &turn_item).await;
@@ -7183,6 +7199,7 @@ async fn try_run_sampling_request(
                         compaction_initial_context,
                         turn_start_context_items,
                         history_before_turn.as_slice(),
+                        history_at_checkpoint.as_slice(),
                     )
                     .await;
                     sess.emit_turn_item_completed(&turn_context, turn_item)

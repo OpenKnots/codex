@@ -471,6 +471,7 @@ async fn auto_server_side_compaction_uses_inline_context_management() -> Result<
     );
 
     let post_inline_request = &requests[2];
+    let post_inline_body = post_inline_request.body_json().to_string();
     assert!(
         post_inline_request.body_contains_text(&inline_summary),
         "expected subsequent request to reuse inline compaction item"
@@ -490,6 +491,15 @@ async fn auto_server_side_compaction_uses_inline_context_management() -> Result<
     assert!(
         post_inline_request.body_contains_text(third_turn_text),
         "expected next turn to append normally after inline compaction"
+    );
+    assert!(
+        post_inline_body
+            .find("INLINE_SERVER_SUMMARY")
+            .expect("inline compaction marker in subsequent request")
+            < post_inline_body
+                .find("AFTER_INLINE_REPLY")
+                .expect("post-compaction assistant reply in subsequent request"),
+        "expected post-compaction transcript items to remain after the inline compaction item"
     );
 
     Ok(())
@@ -580,6 +590,15 @@ async fn auto_server_side_compaction_keeps_current_turn_inputs_for_follow_ups() 
             .function_call_output_text("call-inline-mid-turn")
             .is_some(),
         "expected same-turn follow-up to include the tool output"
+    );
+    assert!(
+        follow_up_body
+            .find("INLINE_SERVER_SUMMARY")
+            .expect("inline compaction marker in follow-up request")
+            < follow_up_body
+                .find("call-inline-mid-turn")
+                .expect("post-compaction tool call in follow-up request"),
+        "expected the inline compaction item to remain ahead of post-compaction tool calls"
     );
 
     Ok(())

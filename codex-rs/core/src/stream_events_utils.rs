@@ -150,6 +150,7 @@ pub(crate) struct OutputItemResult {
 }
 
 pub(crate) struct PendingServerSideCompactionCheckpoint {
+    pub history_at_checkpoint: Vec<ResponseItem>,
     pub item: ResponseItem,
     pub turn_item: ContextCompactionItem,
 }
@@ -180,6 +181,7 @@ pub(crate) async fn handle_output_item_done(
             "buffering streamed server-side compaction item until response.completed"
         );
         output.pending_server_side_compaction = Some(PendingServerSideCompactionCheckpoint {
+            history_at_checkpoint: ctx.sess.clone_history().await.raw_items().to_vec(),
             item,
             turn_item: compaction_item,
         });
