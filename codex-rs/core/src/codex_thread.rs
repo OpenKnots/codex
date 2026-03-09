@@ -18,6 +18,7 @@ use codex_protocol::protocol::AskForApproval;
 use codex_protocol::protocol::SandboxPolicy;
 use codex_protocol::protocol::SessionSource;
 use codex_protocol::protocol::TokenUsage;
+use codex_protocol::protocol::W3cTraceContext;
 use codex_protocol::user_input::UserInput;
 use std::path::PathBuf;
 use tokio::sync::watch;
@@ -61,6 +62,14 @@ impl CodexThread {
 
     pub async fn submit(&self, op: Op) -> CodexResult<String> {
         self.codex.submit(op).await
+    }
+
+    pub async fn submit_with_trace(
+        &self,
+        op: Op,
+        trace: Option<W3cTraceContext>,
+    ) -> CodexResult<String> {
+        self.codex.submit_with_trace(op, trace).await
     }
 
     pub async fn steer_input(

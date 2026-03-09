@@ -203,6 +203,7 @@ impl TestCodexBuilder {
                     config.clone(),
                     path,
                     auth_manager,
+                    None,
                 ))
                 .await?
             }

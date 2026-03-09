@@ -103,6 +103,7 @@ use codex_protocol::protocol::TurnAbortReason;
 use codex_protocol::protocol::TurnContextItem;
 use codex_protocol::protocol::TurnContextNetworkItem;
 use codex_protocol::protocol::TurnStartedEvent;
+use codex_protocol::protocol::W3cTraceContext;
 use codex_protocol::request_permissions::RequestPermissionsArgs;
 use codex_protocol::request_permissions::RequestPermissionsEvent;
 use codex_protocol::request_permissions::RequestPermissionsResponse;
@@ -365,6 +366,7 @@ impl Codex {
         persist_extended_history: bool,
         metrics_service_name: Option<String>,
         inherited_shell_snapshot: Option<Arc<ShellSnapshot>>,
+        parent_trace: Option<W3cTraceContext>,
     ) -> CodexResult<CodexSpawnOk> {
         let (tx_sub, rx_sub) = async_channel::bounded(SUBMISSION_CHANNEL_CAPACITY);
         let (tx_event, rx_event) = async_channel::unbounded();
@@ -404,17 +406,35 @@ impl Codex {
             config.startup_warnings.push(message);
         }
 
+        let parent_trace = match parent_trace {
+            Some(trace) => {
+                if codex_otel::context_from_w3c_trace_context(&trace).is_some() {
+                    Some(trace)
+                } else {
+                    warn!("ignoring invalid thread spawn trace carrier");
+                    None
+                }
+            }
+            None => None,
+        };
+        let set_thread_spawn_parent = |span: &tracing::Span| {
+            if let Some(trace) = parent_trace.as_ref() {
+                let _ = set_parent_from_w3c_trace_context(span, trace);
+            }
+        };
         let allowed_skills_for_implicit_invocation =
             loaded_skills.allowed_skills_for_implicit_invocation();
+        let user_instructions_span = info_span!(
+            "thread_spawn.user_instructions",
+            otel.name = "thread_spawn.user_instructions",
+        );
+        set_thread_spawn_parent(&user_instructions_span);
         let user_instructions = get_user_instructions(
             &config,
             Some(&allowed_skills_for_implicit_invocation),
             Some(loaded_plugins.capability_summaries()),
         )
-        .instrument(info_span!(
-            "thread_spawn.user_instructions",
-            otel.name = "thread_spawn.user_instructions",
-        ))
+        .instrument(user_instructions_span)
         .await;
 
         let exec_policy = if crate::guardian::is_guardian_subagent_source(&session_source) {
@@ -423,11 +443,13 @@ impl Codex {
             // reviewer or silently auto-approve commands.
             ExecPolicyManager::default()
         } else {
+            let exec_policy_span = info_span!(
+                "thread_spawn.exec_policy",
+                otel.name = "thread_spawn.exec_policy",
+            );
+            set_thread_spawn_parent(&exec_policy_span);
             ExecPolicyManager::load(&config.config_layer_stack)
-                .instrument(info_span!(
-                    "thread_spawn.exec_policy",
-                    otel.name = "thread_spawn.exec_policy",
-                ))
+                .instrument(exec_policy_span)
                 .await
                 .map_err(|err| CodexErr::Fatal(format!("failed to load rules: {err}")))?
         };
@@ -443,36 +465,42 @@ impl Codex {
                 crate::models_manager::manager::RefreshStrategy::Offline
             );
         if refreshes_model_catalog {
+            let model_catalog_span = info_span!(
+                "thread_spawn.model_catalog",
+                otel.name = "thread_spawn.model_catalog",
+                thread_spawn.refreshes_model_catalog = refreshes_model_catalog,
+            );
+            set_thread_spawn_parent(&model_catalog_span);
             let _ = models_manager
                 .list_models(refresh_strategy)
-                .instrument(info_span!(
-                    "thread_spawn.model_catalog",
-                    otel.name = "thread_spawn.model_catalog",
-                    thread_spawn.refreshes_model_catalog = refreshes_model_catalog,
-                ))
+                .instrument(model_catalog_span)
                 .await;
         }
+        let default_model_span = info_span!(
+            "thread_spawn.default_model",
+            otel.name = "thread_spawn.default_model",
+            thread_spawn.refreshes_model_catalog = refreshes_model_catalog,
+            thread_spawn.has_requested_model = config.model.is_some(),
+        );
+        set_thread_spawn_parent(&default_model_span);
         let model = models_manager
             .get_default_model(&config.model, refresh_strategy)
-            .instrument(info_span!(
-                "thread_spawn.default_model",
-                otel.name = "thread_spawn.default_model",
-                thread_spawn.refreshes_model_catalog = refreshes_model_catalog,
-                thread_spawn.has_requested_model = config.model.is_some(),
-            ))
+            .instrument(default_model_span)
             .await;
 
         // Resolve base instructions for the session. Priority order:
         // 1. config.base_instructions override
         // 2. conversation history => session_meta.base_instructions
         // 3. base_instructions for current model
+        let base_instructions_span = info_span!(
+            "thread_spawn.base_instructions",
+            otel.name = "thread_spawn.base_instructions",
+            thread_spawn.has_base_instructions_override = config.base_instructions.is_some(),
+        );
+        set_thread_spawn_parent(&base_instructions_span);
         let model_info = models_manager
             .get_model_info(model.as_str(), &config)
-            .instrument(info_span!(
-                "thread_spawn.base_instructions",
-                otel.name = "thread_spawn.base_instructions",
-                thread_spawn.has_base_instructions_override = config.base_instructions.is_some(),
-            ))
+            .instrument(base_instructions_span)
             .await;
         let base_instructions = config
             .base_instructions
@@ -482,6 +510,12 @@ impl Codex {
 
         // Respect thread-start tools. When missing (resumed/forked threads), read from the db
         // first, then fall back to rollout-file tools.
+        let dynamic_tools_span = info_span!(
+            "thread_spawn.dynamic_tools",
+            otel.name = "thread_spawn.dynamic_tools",
+            thread_spawn.dynamic_tool_count = dynamic_tools.len(),
+        );
+        set_thread_spawn_parent(&dynamic_tools_span);
         let persisted_tools = async {
             if dynamic_tools.is_empty() {
                 let thread_id = match &conversation_history {
@@ -505,11 +539,7 @@ impl Codex {
                 None
             }
         }
-        .instrument(info_span!(
-            "thread_spawn.dynamic_tools",
-            otel.name = "thread_spawn.dynamic_tools",
-            thread_spawn.dynamic_tool_count = dynamic_tools.len(),
-        ))
+        .instrument(dynamic_tools_span)
         .await;
         let dynamic_tools = if dynamic_tools.is_empty() {
             persisted_tools
@@ -560,7 +590,6 @@ impl Codex {
         let session_source_clone = session_configuration.session_source.clone();
         let (agent_status_tx, agent_status_rx) = watch::channel(AgentStatus::PendingInit);
 
-        let session_init_span = info_span!("session_init");
         let session = Session::new(
             session_configuration,
             config.clone(),
@@ -576,8 +605,8 @@ impl Codex {
             mcp_manager.clone(),
             file_watcher,
             agent_control,
+            parent_trace.clone(),
         )
-        .instrument(session_init_span)
         .await
         .map_err(|e| {
             error!("Failed to create session: {e:#}");
@@ -607,11 +636,19 @@ impl Codex {
 
     /// Submit the `op` wrapped in a `Submission` with a unique ID.
     pub async fn submit(&self, op: Op) -> CodexResult<String> {
+        self.submit_with_trace(op, None).await
+    }
+
+    pub async fn submit_with_trace(
+        &self,
+        op: Op,
+        trace: Option<W3cTraceContext>,
+    ) -> CodexResult<String> {
         let id = Uuid::now_v7().to_string();
         let sub = Submission {
             id: id.clone(),
             op,
-            trace: None,
+            trace,
         };
         self.submit_with_id(sub).await?;
         Ok(id)
@@ -1259,6 +1296,7 @@ impl Session {
         mcp_manager: Arc<McpManager>,
         file_watcher: Arc<FileWatcher>,
         agent_control: AgentControl,
+        parent_trace: Option<W3cTraceContext>,
     ) -> anyhow::Result<Arc<Self>> {
         debug!(
             "Configuring session: model={}; provider={:?}",
@@ -1271,6 +1309,22 @@ impl Session {
                 session_configuration.cwd
             ));
         }
+        let parent_trace = match parent_trace {
+            Some(trace) => {
+                if codex_otel::context_from_w3c_trace_context(&trace).is_some() {
+                    Some(trace)
+                } else {
+                    warn!("ignoring invalid session init trace carrier");
+                    None
+                }
+            }
+            None => None,
+        };
+        let set_session_init_parent = |span: &tracing::Span| {
+            if let Some(trace) = parent_trace.as_ref() {
+                let _ = set_parent_from_w3c_trace_context(span, trace);
+            }
+        };
 
         let forked_from_id = initial_history.forked_from_id();
 
@@ -1320,6 +1374,12 @@ impl Session {
         // - initialize RolloutRecorder with new or resumed session info
         // - perform default shell discovery
         // - load history metadata (skipped for subagents)
+        let rollout_span = info_span!(
+            "session_init.rollout",
+            otel.name = "session_init.rollout",
+            session_init.ephemeral = config.ephemeral,
+        );
+        set_session_init_parent(&rollout_span);
         let rollout_fut = async {
             if config.ephemeral {
                 Ok::<_, anyhow::Error>((None, None))
@@ -1335,16 +1395,18 @@ impl Session {
                 Ok((Some(rollout_recorder), state_db_ctx))
             }
         }
-        .instrument(info_span!(
-            "session_init.rollout",
-            otel.name = "session_init.rollout",
-            session_init.ephemeral = config.ephemeral,
-        ));
+        .instrument(rollout_span);
 
         let is_subagent = matches!(
             session_configuration.session_source,
             SessionSource::SubAgent(_)
         );
+        let history_metadata_span = info_span!(
+            "session_init.history_metadata",
+            otel.name = "session_init.history_metadata",
+            session_init.is_subagent = is_subagent,
+        );
+        set_session_init_parent(&history_metadata_span);
         let history_meta_fut = async {
             if is_subagent {
                 (0, 0)
@@ -1352,14 +1414,13 @@ impl Session {
                 crate::message_history::history_metadata(&config).await
             }
         }
-        .instrument(info_span!(
-            "session_init.history_metadata",
-            otel.name = "session_init.history_metadata",
-            session_init.is_subagent = is_subagent,
-        ));
+        .instrument(history_metadata_span);
         let auth_manager_clone = Arc::clone(&auth_manager);
         let config_for_mcp = Arc::clone(&config);
         let mcp_manager_for_mcp = Arc::clone(&mcp_manager);
+        let auth_mcp_span =
+            info_span!("session_init.auth_mcp", otel.name = "session_init.auth_mcp",);
+        set_session_init_parent(&auth_mcp_span);
         let auth_and_mcp_fut = async move {
             let auth = auth_manager_clone.auth().await;
             let mcp_servers = mcp_manager_for_mcp.effective_servers(&config_for_mcp, auth.as_ref());
@@ -1370,10 +1431,7 @@ impl Session {
             .await;
             (auth, mcp_servers, auth_statuses)
         }
-        .instrument(info_span!(
-            "session_init.auth_mcp",
-            otel.name = "session_init.auth_mcp",
-        ));
+        .instrument(auth_mcp_span);
 
         // Join all independent futures.
         let (
@@ -1530,12 +1588,14 @@ impl Session {
             default_shell.shell_snapshot = rx;
             tx
         };
+        let thread_name_lookup_span = info_span!(
+            "session_init.thread_name_lookup",
+            otel.name = "session_init.thread_name_lookup",
+        );
+        set_session_init_parent(&thread_name_lookup_span);
         let thread_name =
             match session_index::find_thread_name_by_id(&config.codex_home, &conversation_id)
-                .instrument(info_span!(
-                    "session_init.thread_name_lookup",
-                    otel.name = "session_init.thread_name_lookup",
-                ))
+                .instrument(thread_name_lookup_span)
                 .await
             {
                 Ok(name) => name,
@@ -1578,6 +1638,13 @@ impl Session {
                 });
         let (network_proxy, session_network_proxy) =
             if let Some(spec) = config.permissions.network.as_ref() {
+                let network_proxy_span = info_span!(
+                    "session_init.network_proxy",
+                    otel.name = "session_init.network_proxy",
+                    session_init.managed_network_requirements_enabled =
+                        managed_network_requirements_enabled,
+                );
+                set_session_init_parent(&network_proxy_span);
                 let (network_proxy, session_network_proxy) = Self::start_managed_network_proxy(
                     spec,
                     config.permissions.sandbox_policy.get(),
@@ -1586,12 +1653,7 @@ impl Session {
                     managed_network_requirements_enabled,
                     network_proxy_audit_metadata,
                 )
-                .instrument(info_span!(
-                    "session_init.network_proxy",
-                    otel.name = "session_init.network_proxy",
-                    session_init.managed_network_requirements_enabled =
-                        managed_network_requirements_enabled,
-                ))
+                .instrument(network_proxy_span)
                 .await?;
                 (Some(network_proxy), Some(session_network_proxy))
             } else {
@@ -1726,6 +1788,13 @@ impl Session {
             cancel_guard.cancel();
             *cancel_guard = CancellationToken::new();
         }
+        let mcp_manager_init_span = info_span!(
+            "session_init.mcp_manager_init",
+            otel.name = "session_init.mcp_manager_init",
+            session_init.enabled_mcp_server_count = enabled_mcp_server_count,
+            session_init.required_mcp_server_count = required_mcp_server_count,
+        );
+        set_session_init_parent(&mcp_manager_init_span);
         let (mcp_connection_manager, cancel_token) = McpConnectionManager::new(
             &mcp_servers,
             config.mcp_oauth_credentials_store_mode,
@@ -1737,12 +1806,7 @@ impl Session {
             codex_apps_tools_cache_key(auth),
             tool_plugin_provenance,
         )
-        .instrument(info_span!(
-            "session_init.mcp_manager_init",
-            otel.name = "session_init.mcp_manager_init",
-            session_init.enabled_mcp_server_count = enabled_mcp_server_count,
-            session_init.required_mcp_server_count = required_mcp_server_count,
-        ))
+        .instrument(mcp_manager_init_span)
         .await;
         {
             let mut manager_guard = sess.services.mcp_connection_manager.write().await;
@@ -1756,17 +1820,19 @@ impl Session {
             *cancel_guard = cancel_token;
         }
         if !required_mcp_servers.is_empty() {
+            let required_mcp_wait_span = info_span!(
+                "session_init.required_mcp_wait",
+                otel.name = "session_init.required_mcp_wait",
+                session_init.required_mcp_server_count = required_mcp_server_count,
+            );
+            set_session_init_parent(&required_mcp_wait_span);
             let failures = sess
                 .services
                 .mcp_connection_manager
                 .read()
                 .await
                 .required_startup_failures(&required_mcp_servers)
-                .instrument(info_span!(
-                    "session_init.required_mcp_wait",
-                    otel.name = "session_init.required_mcp_wait",
-                    session_init.required_mcp_server_count = required_mcp_server_count,
-                ))
+                .instrument(required_mcp_wait_span)
                 .await;
             if !failures.is_empty() {
                 let details = failures

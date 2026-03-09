@@ -9,7 +9,9 @@ use codex_app_server_protocol::Result;
 use codex_app_server_protocol::ServerNotification;
 use codex_app_server_protocol::ServerRequest;
 use codex_app_server_protocol::ServerRequestPayload;
+use codex_otel::span_w3c_trace_context;
 use codex_protocol::ThreadId;
+use codex_protocol::protocol::W3cTraceContext;
 use serde::Serialize;
 use tokio::sync::Mutex;
 use tokio::sync::mpsc;
@@ -36,19 +38,31 @@ pub(crate) struct ConnectionRequestId {
     pub(crate) request_id: RequestId,
 }
 
+/// Trace data we keep for an incoming request until we send its final
+/// response or error.
 #[derive(Clone)]
 pub(crate) struct RequestContext {
     request_id: ConnectionRequestId,
     span: Span,
+    trace_context: Option<W3cTraceContext>,
 }
 
 impl RequestContext {
     pub(crate) fn new(request_id: ConnectionRequestId, span: Span) -> Self {
-        Self { request_id, span }
+        let trace_context = span_w3c_trace_context(&span);
+        Self {
+            request_id,
+            span,
+            trace_context,
+        }
     }
 
     pub(crate) fn span(&self) -> &Span {
         &self.span
+    }
+
+    pub(crate) fn trace_context(&self) -> Option<W3cTraceContext> {
+        self.trace_context.clone()
     }
 }
 
@@ -68,6 +82,9 @@ pub(crate) struct OutgoingMessageSender {
     next_server_request_id: AtomicI64,
     sender: mpsc::Sender<OutgoingEnvelope>,
     request_id_to_callback: Mutex<HashMap<RequestId, PendingCallbackEntry>>,
+    /// Incoming requests that are still waiting on a final response or error.
+    /// We keep them here because this is where responses, errors, and
+    /// disconnect cleanup all get handled.
     request_contexts: Mutex<HashMap<ConnectionRequestId, RequestContext>>,
 }
 
@@ -177,6 +194,16 @@ impl OutgoingMessageSender {
     pub(crate) async fn connection_closed(&self, connection_id: ConnectionId) {
         let mut request_contexts = self.request_contexts.lock().await;
         request_contexts.retain(|request_id, _| request_id.connection_id != connection_id);
+    }
+
+    pub(crate) async fn request_trace_context(
+        &self,
+        request_id: &ConnectionRequestId,
+    ) -> Option<W3cTraceContext> {
+        let request_contexts = self.request_contexts.lock().await;
+        request_contexts
+            .get(request_id)
+            .and_then(RequestContext::trace_context)
     }
 
     async fn take_request_context(

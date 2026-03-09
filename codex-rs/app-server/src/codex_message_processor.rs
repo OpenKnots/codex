@@ -197,6 +197,7 @@ use codex_core::connectors::filter_disallowed_connectors;
 use codex_core::connectors::merge_plugin_apps;
 use codex_core::default_client::set_default_client_residency_requirement;
 use codex_core::error::CodexErr;
+use codex_core::error::Result as CodexResult;
 use codex_core::exec::ExecExpiration;
 use codex_core::exec::ExecParams;
 use codex_core::exec_env::create_env;
@@ -1844,6 +1845,24 @@ impl CodexMessageProcessor {
         .await;
     }
 
+    async fn request_trace_context(
+        &self,
+        request_id: &ConnectionRequestId,
+    ) -> Option<codex_protocol::protocol::W3cTraceContext> {
+        self.outgoing.request_trace_context(request_id).await
+    }
+
+    async fn submit_core_op(
+        &self,
+        request_id: &ConnectionRequestId,
+        thread: &CodexThread,
+        op: Op,
+    ) -> CodexResult<String> {
+        thread
+            .submit_with_trace(op, self.request_trace_context(request_id).await)
+            .await
+    }
+
     #[allow(clippy::too_many_arguments)]
     async fn thread_start_task(
         listener_task_context: ListenerTaskContext,
@@ -1857,6 +1876,10 @@ impl CodexMessageProcessor {
         service_name: Option<String>,
         experimental_raw_events: bool,
     ) {
+        let request_trace = listener_task_context
+            .outgoing
+            .request_trace_context(&request_id)
+            .await;
         let request_config_override_count = config_overrides.as_ref().map_or(0, HashMap::len);
         let config = match derive_config_from_params(
             &cli_overrides,
@@ -1933,6 +1956,7 @@ impl CodexMessageProcessor {
                 core_dynamic_tools,
                 persist_extended_history,
                 service_name,
+                request_trace,
             )
             .instrument(tracing::info_span!(
                 "app_server.thread_start.create_thread",
@@ -2158,7 +2182,10 @@ impl CodexMessageProcessor {
         };
 
         if let Ok(thread) = self.thread_manager.get_thread(thread_id).await {
-            if let Err(err) = thread.submit(Op::SetThreadName { name }).await {
+            if let Err(err) = self
+                .submit_core_op(&request_id, thread.as_ref(), Op::SetThreadName { name })
+                .await
+            {
                 self.send_internal_error(request_id, format!("failed to set thread name: {err}"))
                     .await;
                 return;
@@ -2743,7 +2770,14 @@ impl CodexMessageProcessor {
             return;
         }
 
-        if let Err(err) = thread.submit(Op::ThreadRollback { num_turns }).await {
+        if let Err(err) = self
+            .submit_core_op(
+                &request_id,
+                thread.as_ref(),
+                Op::ThreadRollback { num_turns },
+            )
+            .await
+        {
             // No ThreadRollback event will arrive if an error occurs.
             // Clean up and reply immediately.
             let thread_state = self.thread_state_manager.thread_state(thread_id).await;
@@ -2771,7 +2805,10 @@ impl CodexMessageProcessor {
             }
         };
 
-        match thread.submit(Op::Compact).await {
+        match self
+            .submit_core_op(&request_id, thread.as_ref(), Op::Compact)
+            .await
+        {
             Ok(_) => {
                 self.outgoing
                     .send_response(request_id, ThreadCompactStartResponse {})
@@ -2799,7 +2836,10 @@ impl CodexMessageProcessor {
             }
         };
 
-        match thread.submit(Op::CleanBackgroundTerminals).await {
+        match self
+            .submit_core_op(&request_id, thread.as_ref(), Op::CleanBackgroundTerminals)
+            .await
+        {
             Ok(_) => {
                 self.outgoing
                     .send_response(request_id, ThreadBackgroundTerminalsCleanResponse {})
@@ -3247,6 +3287,7 @@ impl CodexMessageProcessor {
                 thread_history,
                 self.auth_manager.clone(),
                 persist_extended_history,
+                self.request_trace_context(&request_id).await,
             )
             .await
         {
@@ -3771,6 +3812,7 @@ impl CodexMessageProcessor {
                 config,
                 rollout_path.clone(),
                 persist_extended_history,
+                self.request_trace_context(&request_id).await,
             )
             .await
         {
@@ -5617,28 +5659,36 @@ impl CodexMessageProcessor {
 
         // If any overrides are provided, update the session turn context first.
         if has_any_overrides {
-            let _ = thread
-                .submit(Op::OverrideTurnContext {
-                    cwd: params.cwd,
-                    approval_policy: params.approval_policy.map(AskForApproval::to_core),
-                    sandbox_policy: params.sandbox_policy.map(|p| p.to_core()),
-                    windows_sandbox_level: None,
-                    model: params.model,
-                    effort: params.effort.map(Some),
-                    summary: params.summary,
-                    service_tier: params.service_tier,
-                    collaboration_mode,
-                    personality: params.personality,
-                })
+            let _ = self
+                .submit_core_op(
+                    &request_id,
+                    thread.as_ref(),
+                    Op::OverrideTurnContext {
+                        cwd: params.cwd,
+                        approval_policy: params.approval_policy.map(AskForApproval::to_core),
+                        sandbox_policy: params.sandbox_policy.map(|p| p.to_core()),
+                        windows_sandbox_level: None,
+                        model: params.model,
+                        effort: params.effort.map(Some),
+                        summary: params.summary,
+                        service_tier: params.service_tier,
+                        collaboration_mode,
+                        personality: params.personality,
+                    },
+                )
                 .await;
         }
 
         // Start the turn by submitting the user input. Return its submission id as turn_id.
-        let turn_id = thread
-            .submit(Op::UserInput {
-                items: mapped_items,
-                final_output_json_schema: params.output_schema,
-            })
+        let turn_id = self
+            .submit_core_op(
+                &request_id,
+                thread.as_ref(),
+                Op::UserInput {
+                    items: mapped_items,
+                    final_output_json_schema: params.output_schema,
+                },
+            )
             .await;
 
         match turn_id {
@@ -5795,11 +5845,15 @@ impl CodexMessageProcessor {
             return;
         };
 
-        let submit = thread
-            .submit(Op::RealtimeConversationStart(ConversationStartParams {
-                prompt: params.prompt,
-                session_id: params.session_id,
-            }))
+        let submit = self
+            .submit_core_op(
+                &request_id,
+                thread.as_ref(),
+                Op::RealtimeConversationStart(ConversationStartParams {
+                    prompt: params.prompt,
+                    session_id: params.session_id,
+                }),
+            )
             .await;
 
         match submit {
@@ -5830,10 +5884,14 @@ impl CodexMessageProcessor {
             return;
         };
 
-        let submit = thread
-            .submit(Op::RealtimeConversationAudio(ConversationAudioParams {
-                frame: params.audio.into(),
-            }))
+        let submit = self
+            .submit_core_op(
+                &request_id,
+                thread.as_ref(),
+                Op::RealtimeConversationAudio(ConversationAudioParams {
+                    frame: params.audio.into(),
+                }),
+            )
             .await;
 
         match submit {
@@ -5864,10 +5922,12 @@ impl CodexMessageProcessor {
             return;
         };
 
-        let submit = thread
-            .submit(Op::RealtimeConversationText(ConversationTextParams {
-                text: params.text,
-            }))
+        let submit = self
+            .submit_core_op(
+                &request_id,
+                thread.as_ref(),
+                Op::RealtimeConversationText(ConversationTextParams { text: params.text }),
+            )
             .await;
 
         match submit {
@@ -5898,7 +5958,9 @@ impl CodexMessageProcessor {
             return;
         };
 
-        let submit = thread.submit(Op::RealtimeConversationClose).await;
+        let submit = self
+            .submit_core_op(&request_id, thread.as_ref(), Op::RealtimeConversationClose)
+            .await;
 
         match submit {
             Ok(_) => {
@@ -5961,7 +6023,13 @@ impl CodexMessageProcessor {
         display_text: &str,
         parent_thread_id: String,
     ) -> std::result::Result<(), JSONRPCErrorError> {
-        let turn_id = parent_thread.submit(Op::Review { review_request }).await;
+        let turn_id = self
+            .submit_core_op(
+                request_id,
+                parent_thread.as_ref(),
+                Op::Review { review_request },
+            )
+            .await;
 
         match turn_id {
             Ok(turn_id) => {
@@ -6015,7 +6083,13 @@ impl CodexMessageProcessor {
             ..
         } = self
             .thread_manager
-            .fork_thread(usize::MAX, config, rollout_path, false)
+            .fork_thread(
+                usize::MAX,
+                config,
+                rollout_path,
+                false,
+                self.request_trace_context(request_id).await,
+            )
             .await
             .map_err(|err| JSONRPCErrorError {
                 code: INTERNAL_ERROR_CODE,
@@ -6070,8 +6144,12 @@ impl CodexMessageProcessor {
             );
         }
 
-        let turn_id = review_thread
-            .submit(Op::Review { review_request })
+        let turn_id = self
+            .submit_core_op(
+                request_id,
+                review_thread.as_ref(),
+                Op::Review { review_request },
+            )
             .await
             .map_err(|err| JSONRPCErrorError {
                 code: INTERNAL_ERROR_CODE,
@@ -6169,7 +6247,9 @@ impl CodexMessageProcessor {
         }
 
         // Submit the interrupt; we'll respond upon TurnAborted.
-        let _ = thread.submit(Op::Interrupt).await;
+        let _ = self
+            .submit_core_op(&request_id, thread.as_ref(), Op::Interrupt)
+            .await;
     }
 
     async fn ensure_conversation_listener(
