@@ -7525,6 +7525,7 @@
       "type": "object"
     },
     "GuardianAssessmentStatus": {
+      "description": "UNSTABLE: Guardian assessment status values are part of the evolving app UI surface.",
       "enum": [
         "in_progress",
         "approved",
@@ -7533,6 +7534,7 @@
       "type": "string"
     },
     "GuardianRiskLevel": {
+      "description": "UNSTABLE: Guardian risk labels are part of the evolving app UI surface.",
       "enum": [
         "low",
         "medium",
@@ -13580,6 +13582,7 @@
           "type": "object"
         },
         {
+          "description": "UNSTABLE: Guardian assessment items may evolve as the app UI settles.",
           "properties": {
             "action": true,
             "id": {
