@@ -172,6 +172,26 @@ fn format_guardian_action_pretty_truncates_large_string_fields() {
 }
 
 #[test]
+fn guardian_assessment_action_value_redacts_apply_patch_patch_text() {
+    let action = GuardianApprovalRequest::ApplyPatch {
+        cwd: PathBuf::from("/tmp"),
+        files: vec![AbsolutePathBuf::try_from("/tmp/guardian.txt").expect("absolute path")],
+        change_count: 1usize,
+        patch: "*** Begin Patch\n*** Update File: guardian.txt\n@@\n+secret\n*** End Patch"
+            .to_string(),
+    };
+
+    assert_eq!(
+        guardian_assessment_action_value(&action),
+        serde_json::json!({
+            "tool": "apply_patch",
+            "files": ["/tmp/guardian.txt"],
+            "change_count": 1,
+        })
+    );
+}
+
+#[test]
 fn build_guardian_transcript_reserves_separate_budget_for_tool_evidence() {
     let repeated = "signal ".repeat(8_000);
     let mut entries = vec![
