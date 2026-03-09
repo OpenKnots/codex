@@ -12,6 +12,7 @@ use crate::external_agent_config_api::ExternalAgentConfigApi;
 use crate::outgoing_message::ConnectionId;
 use crate::outgoing_message::ConnectionRequestId;
 use crate::outgoing_message::OutgoingMessageSender;
+use crate::outgoing_message::RequestContext;
 use crate::transport::AppServerTransport;
 use async_trait::async_trait;
 use codex_app_server_protocol::ChatgptAuthTokensRefreshParams;
@@ -63,7 +64,6 @@ use tokio::sync::watch;
 use tokio::time::Duration;
 use tokio::time::timeout;
 use toml::Value as TomlValue;
-use tracing::Instrument;
 use tracing_opentelemetry::OpenTelemetrySpanExt;
 
 const EXTERNAL_AUTH_REFRESH_TIMEOUT: Duration = Duration::from_secs(10);
@@ -255,6 +255,10 @@ impl MessageProcessor {
             connection_id,
             request_id: request.id.clone(),
         };
+        let request_context = RequestContext::new(request_id.clone(), request_span.clone());
+        self.outgoing
+            .register_request_context(request_context.clone())
+            .await;
         let request_json = match serde_json::to_value(&request) {
             Ok(request_json) => request_json,
             Err(err) => {
@@ -281,22 +285,16 @@ impl MessageProcessor {
             }
         };
 
-        // Websocket callers finalize outbound readiness in lib.rs after mirroring
-        // session state into outbound state and sending initialize notifications to
-        // this specific connection. Passing `None` avoids marking the connection
-        // ready too early from inside the shared request handler.
-        if matches!(codex_request, ClientRequest::ThreadStart { .. }) {
+        async {
+            // Websocket callers finalize outbound readiness in lib.rs after mirroring
+            // session state into outbound state and sending initialize notifications to
+            // this specific connection. Passing `None` avoids marking the connection
+            // ready too early from inside the shared request handler.
             self.handle_client_request(connection_id, request_id, codex_request, session, None)
-                .with_context(request_span.context())
                 .await;
-        } else {
-            async {
-                self.handle_client_request(connection_id, request_id, codex_request, session, None)
-                    .await;
-            }
-            .instrument(request_span)
-            .await;
         }
+        .with_context(request_context.span().context())
+        .await;
     }
 
     /// Handles a typed request path used by in-process embedders.
@@ -316,12 +314,19 @@ impl MessageProcessor {
             connection_id,
             request_id: request.id().clone(),
         };
+        let request_context = RequestContext::new(request_id.clone(), request_span.clone());
+        self.outgoing
+            .register_request_context(request_context.clone())
+            .await;
         tracing::trace!(
             ?connection_id,
             request_id = ?request_id.request_id,
             "app-server typed request"
         );
-        if matches!(request, ClientRequest::ThreadStart { .. }) {
+        async {
+            // In-process clients do not have the websocket transport loop that performs
+            // post-initialize bookkeeping, so they still finalize outbound readiness in
+            // the shared request handler.
             self.handle_client_request(
                 connection_id,
                 request_id,
@@ -329,25 +334,10 @@ impl MessageProcessor {
                 session,
                 Some(outbound_initialized),
             )
-            .with_context(request_span.context())
-            .await;
-        } else {
-            async {
-                // In-process clients do not have the websocket transport loop that performs
-                // post-initialize bookkeeping, so they still finalize outbound readiness in
-                // the shared request handler.
-                self.handle_client_request(
-                    connection_id,
-                    request_id,
-                    request,
-                    session,
-                    Some(outbound_initialized),
-                )
-                .await;
-            }
-            .instrument(request_span)
             .await;
         }
+        .with_context(request_context.span().context())
+        .await;
     }
 
     pub(crate) async fn process_notification(&self, notification: JSONRPCNotification) {
@@ -406,6 +396,7 @@ impl MessageProcessor {
     }
 
     pub(crate) async fn connection_closed(&mut self, connection_id: ConnectionId) {
+        self.outgoing.connection_closed(connection_id).await;
         self.codex_message_processor
             .connection_closed(connection_id)
             .await;
@@ -1069,9 +1060,7 @@ mod tests {
             TraceId::from_hex("00000000000000000000000000000011").expect("trace id");
         let remote_parent_span_id = SpanId::from_hex("0000000000000022").expect("parent span id");
         let remote_trace = W3cTraceContext {
-            traceparent: Some(format!(
-                "00-{remote_trace_id}-{remote_parent_span_id}-01"
-            )),
+            traceparent: Some(format!("00-{remote_trace_id}-{remote_parent_span_id}-01")),
             tracestate: Some("vendor=value".to_string()),
         };
 
