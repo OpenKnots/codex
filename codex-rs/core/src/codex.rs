@@ -20,6 +20,7 @@ use crate::apps::render_apps_section;
 use crate::commit_attribution::commit_message_trailer_instruction;
 use crate::compact;
 use crate::compact::InitialContextInjection;
+use crate::compact::insert_initial_context_before_last_real_user_or_summary;
 use crate::compact::run_inline_auto_compact_task;
 use crate::compact::should_use_remote_compact_task;
 use crate::compact_remote::run_inline_remote_auto_compact_task;
@@ -3184,8 +3185,10 @@ impl Session {
         history_before_turn: &[ResponseItem],
     ) {
         let current_history = self.clone_history().await;
+        let initial_context = self.build_initial_context(turn_context).await;
         let replacement_history = build_server_side_compaction_replacement_history(
             item.clone(),
+            initial_context,
             history_before_turn,
             current_history.raw_items(),
         );
@@ -5772,30 +5775,31 @@ struct PendingServerSideCompaction {
 
 fn build_server_side_compaction_replacement_history(
     compaction_item: ResponseItem,
+    initial_context: Vec<ResponseItem>,
     history_before_turn: &[ResponseItem],
     current_history: &[ResponseItem],
 ) -> Vec<ResponseItem> {
     let current_turn_items = current_history
         .strip_prefix(history_before_turn)
+        .or_else(|| current_history.strip_prefix(initial_context.as_slice()))
         .unwrap_or(current_history);
-    let current_turn_items = if matches!(
-        current_turn_items.first(),
-        Some(ResponseItem::Compaction { .. })
-    ) {
-        let first_non_compaction = current_turn_items
-            .iter()
-            .position(|item| !matches!(item, ResponseItem::Compaction { .. }))
-            .unwrap_or(current_turn_items.len());
-        &current_turn_items[first_non_compaction..]
-    } else {
-        current_turn_items
-    };
-    let mut replacement_history = vec![compaction_item];
-    replacement_history.extend(
-        current_turn_items
-            .iter()
-            .filter(|item| !matches!(item, ResponseItem::GhostSnapshot { .. }))
-            .cloned(),
+    let mut replacement_history: Vec<ResponseItem> = current_turn_items
+        .iter()
+        .filter(|item| !matches!(item, ResponseItem::GhostSnapshot { .. }))
+        .filter(|item| !matches!(item, ResponseItem::Compaction { .. }))
+        .filter(|item| match item {
+            ResponseItem::Message { role, .. } if role == "developer" => false,
+            ResponseItem::Message { role, content, .. } if role == "user" => {
+                !crate::event_mapping::is_contextual_user_message_content(content)
+            }
+            _ => true,
+        })
+        .cloned()
+        .collect();
+    replacement_history.push(compaction_item);
+    let mut replacement_history = insert_initial_context_before_last_real_user_or_summary(
+        replacement_history,
+        initial_context,
     );
     replacement_history.extend(
         current_history

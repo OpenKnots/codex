@@ -476,6 +476,10 @@ async fn auto_server_side_compaction_uses_inline_context_management() -> Result<
         "expected subsequent request to reuse inline compaction item"
     );
     assert!(
+        post_inline_request.body_contains_text("<permissions instructions>"),
+        "expected subsequent request to preserve canonical context after inline compaction"
+    );
+    assert!(
         !post_inline_request.body_contains_text(first_turn_text),
         "expected pre-compaction user history to be dropped after inline compaction"
     );
@@ -545,9 +549,14 @@ async fn auto_server_side_compaction_keeps_current_turn_inputs_for_follow_ups() 
     );
 
     let follow_up_request = &requests[2];
+    let follow_up_body = follow_up_request.body_json().to_string();
     assert!(
         follow_up_request.body_contains_text(&inline_summary),
         "expected same-turn follow-up to include the inline compaction item"
+    );
+    assert!(
+        follow_up_request.body_contains_text("<permissions instructions>"),
+        "expected same-turn follow-up to preserve canonical context after inline compaction"
     );
     assert!(
         follow_up_request.body_contains_text(second_turn_text),
@@ -556,6 +565,15 @@ async fn auto_server_side_compaction_keeps_current_turn_inputs_for_follow_ups() 
     assert!(
         !follow_up_request.body_contains_text(first_turn_text),
         "expected same-turn follow-up to drop pre-compaction history"
+    );
+    assert!(
+        follow_up_body
+            .find(second_turn_text)
+            .expect("current turn text in follow-up request")
+            < follow_up_body
+                .find("INLINE_SERVER_SUMMARY")
+                .expect("inline compaction marker in follow-up request"),
+        "expected current-turn items to remain ahead of the inline compaction item"
     );
     assert!(
         follow_up_request
