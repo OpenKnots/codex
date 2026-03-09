@@ -3187,6 +3187,9 @@ impl Session {
         history_before_turn: &[ResponseItem],
         history_at_checkpoint: &[ResponseItem],
     ) {
+        // The server emits compaction as a streamed item before the response is fully complete.
+        // Wait until `response.completed` to rewrite local history so later streamed items from the
+        // same turn can still be appended in wire order before we collapse the checkpoint.
         let current_history = self.clone_history().await;
         let replacement_history = build_server_side_compaction_replacement_history(
             item.clone(),
@@ -5786,6 +5789,11 @@ fn build_server_side_compaction_replacement_history(
     history_at_checkpoint: &[ResponseItem],
     current_history: &[ResponseItem],
 ) -> Vec<ResponseItem> {
+    // Rebuild the active turn around the compaction checkpoint:
+    // 1. keep the turn-local items that existed when compaction fired
+    // 2. replace any prior same-turn compaction summary with the newest one
+    // 3. re-append items that arrived later in the same streamed response
+    // 4. reattach ghost snapshots at the end so undo state survives the rewrite
     let checkpoint_turn_items = history_at_checkpoint
         .strip_prefix(history_before_turn)
         .unwrap_or(history_at_checkpoint);
@@ -5953,6 +5961,13 @@ async fn maybe_run_previous_model_inline_compact(
     turn_context: &Arc<TurnContext>,
     total_usage_tokens: i64,
 ) -> CodexResult<bool> {
+    // Keep OpenAI auto-compaction on one path. If inline server-side compaction is eligible for
+    // the current turn, let the normal pre-turn inline request handle it instead of running the
+    // older previous-model client-side preflight flow first.
+    if inline_server_side_compaction_threshold(sess, turn_context).is_some() {
+        return Ok(false);
+    }
+
     let Some(previous_turn_settings) = sess.previous_turn_settings().await else {
         return Ok(false);
     };

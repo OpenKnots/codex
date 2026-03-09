@@ -178,6 +178,9 @@ pub(crate) async fn handle_output_item_done(
             Some(TurnItem::ContextCompaction(item)) => item,
             _ => ContextCompactionItem::new(),
         });
+        // Preserve the raw wire event immediately, but defer the committed turn-item lifecycle
+        // until `response.completed` so later streamed output from the same response is not
+        // reordered around the local checkpoint rewrite.
         debug!(
             turn_id = %ctx.turn_context.sub_id,
             "emitting streamed server-side raw compaction item and buffering committed checkpoint until response.completed"
