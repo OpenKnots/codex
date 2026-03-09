@@ -588,15 +588,18 @@ async fn run_exec_session(args: ExecRunArgs) -> anyhow::Result<()> {
                     &client,
                     ClientRequest::ThreadFork {
                         request_id: request_ids.next(),
-                        params: thread_fork_params_from_config(&config, session_id, Some(fork_path)),
+                        params: thread_fork_params_from_config(
+                            &config,
+                            session_id,
+                            Some(fork_path),
+                        ),
                     },
                     "thread/fork",
                 )
                 .await
                 .map_err(anyhow::Error::msg)?;
-                let session_configured =
-                    session_configured_from_thread_fork_response(&response)
-                        .map_err(anyhow::Error::msg)?;
+                let session_configured = session_configured_from_thread_fork_response(&response)
+                    .map_err(anyhow::Error::msg)?;
                 (session_configured.session_id, session_configured)
             } else {
                 let response: ThreadStartResponse = send_request_with_response(
