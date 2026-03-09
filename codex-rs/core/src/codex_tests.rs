@@ -3931,6 +3931,62 @@ async fn task_finish_emits_turn_item_lifecycle_for_leftover_pending_user_input()
     ));
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn inline_compaction_output_item_buffers_checkpoint_without_committing_turn_item() {
+    let (sess, tc, rx) = make_session_and_context_with_rx().await;
+    while rx.try_recv().is_ok() {}
+
+    let router = Arc::new(ToolRouter::from_config(
+        &tc.tools_config,
+        None,
+        None,
+        tc.dynamic_tools.as_slice(),
+    ));
+    let tracker = Arc::new(tokio::sync::Mutex::new(TurnDiffTracker::new()));
+    let mut ctx = crate::stream_events_utils::HandleOutputCtx {
+        sess: Arc::clone(&sess),
+        turn_context: Arc::clone(&tc),
+        tool_runtime: crate::tools::parallel::ToolCallRuntime::new(
+            router,
+            Arc::clone(&sess),
+            Arc::clone(&tc),
+            tracker,
+        ),
+        cancellation_token: tokio_util::sync::CancellationToken::new(),
+    };
+    let item = ResponseItem::Compaction {
+        encrypted_content: "INLINE_SERVER_SUMMARY".to_string(),
+    };
+
+    let output = crate::stream_events_utils::handle_output_item_done(
+        &mut ctx,
+        item.clone(),
+        Some(TurnItem::ContextCompaction(
+            codex_protocol::items::ContextCompactionItem::new(),
+        )),
+    )
+    .await
+    .expect("handle output item");
+
+    assert!(output.pending_server_side_compaction.is_some());
+    assert!(output.tool_future.is_none());
+    assert!(!output.needs_follow_up);
+    assert!(output.last_agent_message.is_none());
+
+    let first = tokio::time::timeout(std::time::Duration::from_secs(2), rx.recv())
+        .await
+        .expect("expected raw response item event")
+        .expect("channel open");
+    assert!(matches!(
+        first.msg,
+        EventMsg::RawResponseItem(raw) if raw.item == item
+    ));
+    assert!(
+        rx.try_recv().is_err(),
+        "expected no committed compaction item lifecycle before response.completed"
+    );
+}
+
 #[tokio::test]
 async fn steer_input_requires_active_turn() {
     let (sess, _tc, _rx) = make_session_and_context_with_rx().await;

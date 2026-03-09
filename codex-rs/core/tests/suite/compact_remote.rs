@@ -506,7 +506,7 @@ async fn auto_server_side_compaction_uses_inline_context_management() -> Result<
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn auto_server_side_compaction_emits_events_before_later_streamed_items() -> Result<()> {
+async fn auto_server_side_compaction_commits_events_after_later_streamed_items() -> Result<()> {
     skip_if_no_network!(Ok(()));
 
     let compact_threshold = 120;
@@ -587,9 +587,9 @@ async fn auto_server_side_compaction_emits_events_before_later_streamed_items() 
     }
 
     assert!(
-        context_compacted_index.expect("context compacted event")
-            < assistant_completed_index.expect("assistant completed event"),
-        "expected the inline compaction event to arrive before later streamed assistant items"
+        assistant_completed_index.expect("assistant completed event")
+            < context_compacted_index.expect("context compacted event"),
+        "expected the committed inline compaction event to arrive only after later streamed assistant items"
     );
 
     Ok(())
@@ -860,12 +860,11 @@ async fn auto_server_side_compaction_preserves_recomputed_token_estimate() -> Re
         let event = codex.next_event().await.expect("event");
         match event.msg {
             EventMsg::TokenCount(token_count) => {
-                if let Some(last_token_usage) = token_count
-                    .info
-                    .as_ref()
-                    .map(|info| info.last_token_usage.total_tokens)
-                {
-                    token_usage_events.push(last_token_usage);
+                if let Some(info) = token_count.info.as_ref() {
+                    token_usage_events.push((
+                        info.last_token_usage.total_tokens,
+                        info.total_token_usage.total_tokens,
+                    ));
                 }
             }
             EventMsg::TurnComplete(_) => {
@@ -885,8 +884,8 @@ async fn auto_server_side_compaction_preserves_recomputed_token_estimate() -> Re
         token_usage_events
             .iter()
             .copied()
-            .any(|tokens| tokens > 500),
-        "expected a post-compaction token event to keep the recomputed local estimate instead of reverting to the provider-reported total: {token_usage_events:?}"
+            .any(|(last_tokens, total_tokens)| last_tokens > 500 && total_tokens >= 1_000),
+        "expected a post-compaction token event to keep the recomputed local estimate and preserve cumulative provider accounting: {token_usage_events:?}"
     );
 
     Ok(())

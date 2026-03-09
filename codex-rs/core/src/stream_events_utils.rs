@@ -154,6 +154,7 @@ pub(crate) struct OutputItemResult {
 pub(crate) struct PendingServerSideCompactionCheckpoint {
     pub history_at_checkpoint: Vec<ResponseItem>,
     pub item: ResponseItem,
+    pub turn_item: TurnItem,
 }
 
 pub(crate) struct HandleOutputCtx {
@@ -179,14 +180,8 @@ pub(crate) async fn handle_output_item_done(
         });
         debug!(
             turn_id = %ctx.turn_context.sub_id,
-            "emitting streamed server-side compaction item and buffering history rewrite until response.completed"
+            "emitting streamed server-side raw compaction item and buffering committed checkpoint until response.completed"
         );
-        ctx.sess
-            .emit_turn_item_started(&ctx.turn_context, &turn_item)
-            .await;
-        ctx.sess
-            .emit_turn_item_completed(&ctx.turn_context, turn_item)
-            .await;
         ctx.sess
             .send_event(
                 &ctx.turn_context,
@@ -196,6 +191,7 @@ pub(crate) async fn handle_output_item_done(
         output.pending_server_side_compaction = Some(PendingServerSideCompactionCheckpoint {
             history_at_checkpoint: ctx.sess.clone_history().await.raw_items().to_vec(),
             item,
+            turn_item,
         });
         return Ok(output);
     }

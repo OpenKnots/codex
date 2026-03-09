@@ -3213,7 +3213,6 @@ impl Session {
             1,
             &[("mode", "server_side")],
         );
-        self.recompute_token_usage(turn_context).await;
     }
 
     pub(crate) async fn record_model_warning(&self, message: impl Into<String>, ctx: &TurnContext) {
@@ -7187,6 +7186,7 @@ async fn try_run_sampling_request(
                 if let Some(PendingServerSideCompactionCheckpoint {
                     history_at_checkpoint,
                     item,
+                    turn_item,
                 }) = pending_server_side_compaction_checkpoint.take()
                 {
                     sess.apply_server_side_compaction_checkpoint(
@@ -7198,6 +7198,17 @@ async fn try_run_sampling_request(
                         history_at_checkpoint.as_slice(),
                     )
                     .await;
+                    sess.emit_turn_item_started(&turn_context, &turn_item).await;
+                    sess.emit_turn_item_completed(&turn_context, turn_item)
+                        .await;
+                    if let Some(token_usage) = token_usage.as_ref() {
+                        let mut state = sess.state.lock().await;
+                        state.update_token_info_from_usage(
+                            token_usage,
+                            turn_context.model_context_window(),
+                        );
+                    }
+                    sess.recompute_token_usage(&turn_context).await;
                     applied_server_side_compaction_checkpoint = true;
                 }
                 if !applied_server_side_compaction_checkpoint {
