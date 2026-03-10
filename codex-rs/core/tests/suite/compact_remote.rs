@@ -692,8 +692,8 @@ async fn auto_server_side_compaction_follow_ups_use_compaction_checkpoint() -> R
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn auto_server_side_compaction_retries_without_committing_incomplete_checkpoint() -> Result<()>
-{
+async fn auto_server_side_compaction_retries_without_persisting_failed_compaction_item()
+-> Result<()> {
     skip_if_no_network!(Ok(()));
 
     let compact_threshold = 120;
@@ -764,7 +764,7 @@ async fn auto_server_side_compaction_retries_without_committing_incomplete_check
     let third_turn_request = &requests[3];
     assert!(
         !third_turn_request.body_contains_text(&inline_summary),
-        "failed inline compaction should not rewrite local history before a retry succeeds"
+        "failed inline compaction should not persist its compaction item into later turns"
     );
     assert!(
         third_turn_request.body_contains_text(first_turn_text),

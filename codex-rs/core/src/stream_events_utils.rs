@@ -178,7 +178,7 @@ pub(crate) async fn handle_output_item_done(
             _ => ContextCompactionItem::new(),
         });
         // Preserve the raw wire event immediately; the caller rewrites local history inline and
-        // then continues appending later same-turn output after the checkpoint item.
+        // then continues appending later same-turn output after the compaction item.
         debug!(
             turn_id = %ctx.turn_context.sub_id,
             "emitting streamed server-side raw compaction item for immediate local checkpoint apply"

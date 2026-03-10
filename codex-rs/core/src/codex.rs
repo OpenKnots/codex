@@ -5838,7 +5838,7 @@ async fn run_pre_sampling_compact(
         .model_info
         .auto_compact_token_limit()
         .unwrap_or(i64::MAX);
-    // Compact if the total usage tokens are greater than the auto compact limit
+    // Compact if the total usage tokens are greater than or equal to the auto-compact limit.
     if total_usage_tokens >= auto_compact_limit {
         if inline_server_side_compaction_threshold(sess, turn_context).is_some() {
             record_compaction_metric(
