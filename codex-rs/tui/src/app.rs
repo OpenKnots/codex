@@ -1528,7 +1528,8 @@ impl App {
         self.chat_widget.set_pending_thread_approvals(Vec::new());
     }
 
-    fn replace_chat_widget(&mut self, chat_widget: ChatWidget) {
+    fn replace_chat_widget(&mut self, mut chat_widget: ChatWidget) {
+        chat_widget.last_terminal_title = self.chat_widget.last_terminal_title.take();
         self.chat_widget = chat_widget;
     }
 
@@ -4598,6 +4599,27 @@ mod tests {
             ),
             other => panic!("expected queued follow-up submission, got {other:?}"),
         }
+    }
+
+    #[tokio::test]
+    async fn replace_chat_widget_preserves_terminal_title_cache_for_empty_replacement_title() {
+        let (mut app, _app_event_rx, _op_rx) = make_test_app_with_channels().await;
+        app.chat_widget.last_terminal_title = Some("my-project | Ready".to_string());
+
+        let (mut replacement, _app_event_tx, _rx, _new_op_rx) =
+            make_chatwidget_manual_with_sender().await;
+        replacement.setup_terminal_title(Vec::new());
+
+        app.replace_chat_widget(replacement);
+
+        assert_eq!(
+            app.chat_widget.last_terminal_title,
+            Some("my-project | Ready".to_string())
+        );
+
+        app.refresh_status_surfaces();
+
+        assert_eq!(app.chat_widget.last_terminal_title, None);
     }
 
     #[tokio::test]
