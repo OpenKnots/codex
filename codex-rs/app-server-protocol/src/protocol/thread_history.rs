@@ -1739,10 +1739,12 @@ mod tests {
             }),
             EventMsg::DynamicToolCallRequest(
                 codex_protocol::dynamic_tools::DynamicToolCallRequest {
+                    thread_id: "thread-1".into(),
                     call_id: "dyn-1".into(),
                     turn_id: "turn-1".into(),
                     tool: "lookup_ticket".into(),
                     arguments: serde_json::json!({"id":"ABC-123"}),
+                    provider_owned: false,
                 },
             ),
             EventMsg::DynamicToolCallResponse(DynamicToolCallResponseEvent {

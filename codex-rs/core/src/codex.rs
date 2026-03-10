@@ -524,6 +524,7 @@ impl Codex {
             app_server_client_name: None,
             session_source,
             dynamic_tools,
+            registered_dynamic_tools: Vec::new(),
             persist_extended_history,
             inherited_shell_snapshot,
         };
@@ -941,6 +942,7 @@ pub(crate) struct SessionConfiguration {
     /// Source of the session (cli, vscode, exec, mcp, ...)
     session_source: SessionSource,
     dynamic_tools: Vec<DynamicToolSpec>,
+    registered_dynamic_tools: Vec<DynamicToolSpec>,
     persist_extended_history: bool,
     inherited_shell_snapshot: Option<Arc<ShellSnapshot>>,
 }
@@ -948,6 +950,22 @@ pub(crate) struct SessionConfiguration {
 impl SessionConfiguration {
     pub(crate) fn codex_home(&self) -> &PathBuf {
         &self.codex_home
+    }
+
+    fn effective_dynamic_tools(&self) -> Vec<DynamicToolSpec> {
+        let mut seen_names = HashSet::new();
+        let mut tools =
+            Vec::with_capacity(self.dynamic_tools.len() + self.registered_dynamic_tools.len());
+        for tool in self
+            .dynamic_tools
+            .iter()
+            .chain(self.registered_dynamic_tools.iter())
+        {
+            if seen_names.insert(tool.name.clone()) {
+                tools.push(tool.clone());
+            }
+        }
+        tools
     }
 
     fn thread_config_snapshot(&self) -> ThreadConfigSnapshot {
@@ -1238,7 +1256,7 @@ impl Session {
             tool_call_gate: Arc::new(ReadinessFlag::new()),
             truncation_policy: model_info.truncation_policy.into(),
             js_repl,
-            dynamic_tools: session_configuration.dynamic_tools.clone(),
+            dynamic_tools: session_configuration.effective_dynamic_tools(),
             turn_metadata_state,
             turn_skills: TurnSkillsContext::new(skills_outcome),
             turn_timing_state: Arc::new(TurnTimingState::default()),
@@ -2418,6 +2436,14 @@ impl Session {
             .session_configuration
             .original_config_do_not_use
             .clone()
+    }
+
+    pub(crate) async fn update_registered_dynamic_tools(
+        &self,
+        dynamic_tools: Vec<DynamicToolSpec>,
+    ) {
+        let mut state = self.state.lock().await;
+        state.session_configuration.registered_dynamic_tools = dynamic_tools;
     }
 
     pub(crate) async fn provider(&self) -> ModelProviderInfo {

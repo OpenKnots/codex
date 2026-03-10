@@ -1975,6 +1975,13 @@
             "callId": {
               "type": "string"
             },
+            "providerOwned": {
+              "default": false,
+              "type": "boolean"
+            },
+            "threadId": {
+              "type": "string"
+            },
             "tool": {
               "type": "string"
             },
@@ -1992,6 +1999,7 @@
           "required": [
             "arguments",
             "callId",
+            "threadId",
             "tool",
             "turnId",
             "type"
@@ -8075,6 +8083,13 @@
         "callId": {
           "type": "string"
         },
+        "providerOwned": {
+          "default": false,
+          "type": "boolean"
+        },
+        "threadId": {
+          "type": "string"
+        },
         "tool": {
           "type": "string"
         },
@@ -8092,6 +8107,7 @@
       "required": [
         "arguments",
         "callId",
+        "threadId",
         "tool",
         "turnId",
         "type"

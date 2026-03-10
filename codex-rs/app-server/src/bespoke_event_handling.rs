@@ -12,6 +12,7 @@ use crate::thread_state::ThreadState;
 use crate::thread_state::TurnSummary;
 use crate::thread_status::ThreadWatchActiveGuard;
 use crate::thread_status::ThreadWatchManager;
+use crate::tool_provider::ToolProviderRegistry;
 use codex_app_server_protocol::AccountRateLimitsUpdatedNotification;
 use codex_app_server_protocol::AdditionalPermissionProfile as V2AdditionalPermissionProfile;
 use codex_app_server_protocol::AgentMessageDeltaNotification;
@@ -189,6 +190,7 @@ pub(crate) async fn apply_bespoke_event_handling(
     conversation: Arc<CodexThread>,
     thread_manager: Arc<ThreadManager>,
     outgoing: ThreadScopedOutgoingMessageSender,
+    tool_provider_registry: ToolProviderRegistry,
     thread_state: Arc<tokio::sync::Mutex<ThreadState>>,
     thread_watch_manager: ThreadWatchManager,
     api_version: ApiVersion,
@@ -742,6 +744,7 @@ pub(crate) async fn apply_bespoke_event_handling(
                 let turn_id = request.turn_id;
                 let tool = request.tool;
                 let arguments = request.arguments;
+                let provider_owned = request.provider_owned;
                 let item = ThreadItem::DynamicToolCall {
                     id: call_id.clone(),
                     tool: tool.clone(),
@@ -766,11 +769,40 @@ pub(crate) async fn apply_bespoke_event_handling(
                     tool: tool.clone(),
                     arguments: arguments.clone(),
                 };
-                let (_pending_request_id, rx) = outgoing
-                    .send_request(ServerRequestPayload::DynamicToolCall(params))
-                    .await;
+                let (pending_request_id, rx, response_timeout) = if provider_owned {
+                    let Some(target) = tool_provider_registry.lookup_target(&tool).await else {
+                        crate::dynamic_tools::submit_failed_tool_response(
+                            call_id,
+                            "dynamic tool provider is unavailable",
+                            conversation,
+                        )
+                        .await;
+                        return;
+                    };
+                    let (pending_request_id, rx) = outgoing
+                        .send_request_to_connection(
+                            target.connection_id,
+                            ServerRequestPayload::DynamicToolCall(params),
+                        )
+                        .await;
+                    (pending_request_id, rx, Some(target.default_timeout))
+                } else {
+                    let (pending_request_id, rx) = outgoing
+                        .send_request(ServerRequestPayload::DynamicToolCall(params))
+                        .await;
+                    (pending_request_id, rx, None)
+                };
+                let outgoing_for_response = outgoing.clone();
                 tokio::spawn(async move {
-                    crate::dynamic_tools::on_call_response(call_id, rx, conversation).await;
+                    crate::dynamic_tools::on_call_response(
+                        call_id,
+                        pending_request_id,
+                        rx,
+                        conversation,
+                        outgoing_for_response,
+                        response_timeout,
+                    )
+                    .await;
                 });
             } else {
                 error!(

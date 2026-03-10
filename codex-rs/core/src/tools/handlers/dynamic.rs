@@ -97,11 +97,18 @@ async fn request_dynamic_tool(
     }
 
     let started_at = Instant::now();
+    let provider_owned = turn_context
+        .dynamic_tools
+        .iter()
+        .find(|spec| spec.name == tool)
+        .is_some_and(|spec| spec.provider_owned);
     let event = EventMsg::DynamicToolCallRequest(DynamicToolCallRequest {
+        thread_id: session.conversation_id.to_string(),
         call_id: call_id.clone(),
         turn_id: turn_id.clone(),
         tool: tool.clone(),
         arguments: arguments.clone(),
+        provider_owned,
     });
     session.send_event(turn_context, event).await;
     let response = rx_response.await.ok();

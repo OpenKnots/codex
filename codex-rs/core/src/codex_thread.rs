@@ -11,6 +11,7 @@ use crate::protocol::Op;
 use crate::protocol::Submission;
 use codex_protocol::config_types::Personality;
 use codex_protocol::config_types::ServiceTier;
+use codex_protocol::dynamic_tools::DynamicToolSpec;
 use codex_protocol::models::ContentItem;
 use codex_protocol::models::ResponseInputItem;
 use codex_protocol::models::ResponseItem;
@@ -142,6 +143,13 @@ impl CodexThread {
 
     pub async fn config_snapshot(&self) -> ThreadConfigSnapshot {
         self.codex.thread_config_snapshot().await
+    }
+
+    pub async fn update_registered_dynamic_tools(&self, dynamic_tools: Vec<DynamicToolSpec>) {
+        self.codex
+            .session
+            .update_registered_dynamic_tools(dynamic_tools)
+            .await;
     }
 
     pub fn enabled(&self, feature: Feature) -> bool {

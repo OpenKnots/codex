@@ -167,6 +167,23 @@ impl ToolRouter {
                 err,
             ));
         }
+        if source == ToolCallSource::Direct
+            && turn
+                .dynamic_tools
+                .iter()
+                .find(|tool| tool.name == tool_name)
+                .is_some_and(|tool| !tool.inject_into_context)
+        {
+            let err = FunctionCallError::RespondToModel(
+                "direct tool calls are disabled for this dynamic tool; use js_repl and codex.tool(...) instead"
+                    .to_string(),
+            );
+            return Ok(Self::failure_response(
+                failure_call_id,
+                payload_outputs_custom,
+                err,
+            ));
+        }
 
         let invocation = ToolInvocation {
             session,
@@ -218,8 +235,10 @@ mod tests {
     use std::sync::Arc;
 
     use crate::codex::make_session_and_context;
+    use crate::codex::make_session_and_context_with_dynamic_tools_and_rx;
     use crate::tools::context::ToolPayload;
     use crate::turn_diff_tracker::TurnDiffTracker;
+    use codex_protocol::dynamic_tools::DynamicToolSpec;
     use codex_protocol::models::ResponseInputItem;
 
     use super::ToolCall;
@@ -324,6 +343,57 @@ mod tests {
                 assert!(
                     !content.contains("direct tool calls are disabled"),
                     "js_repl source should bypass direct-call policy gate"
+                );
+            }
+            other => panic!("expected function call output, got {other:?}"),
+        }
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn non_injected_dynamic_tools_block_direct_tool_calls() -> anyhow::Result<()> {
+        let (session, turn, _rx) =
+            make_session_and_context_with_dynamic_tools_and_rx(vec![DynamicToolSpec {
+                name: "hidden_dynamic_tool".to_string(),
+                description: "Only callable from js_repl.".to_string(),
+                input_schema: serde_json::json!({
+                    "type": "object",
+                    "properties": {},
+                    "additionalProperties": false
+                }),
+                inject_into_context: false,
+                provider_owned: false,
+            }])
+            .await;
+
+        let session = Arc::clone(&session);
+        let turn = Arc::clone(&turn);
+        let router = ToolRouter::from_config(
+            &turn.tools_config,
+            None,
+            None,
+            turn.dynamic_tools.as_slice(),
+        );
+
+        let call = ToolCall {
+            tool_name: "hidden_dynamic_tool".to_string(),
+            call_id: "call-3".to_string(),
+            payload: ToolPayload::Function {
+                arguments: "{}".to_string(),
+            },
+        };
+        let tracker = Arc::new(tokio::sync::Mutex::new(TurnDiffTracker::new()));
+        let response = router
+            .dispatch_tool_call(session, turn, tracker, call, ToolCallSource::Direct)
+            .await?;
+
+        match response {
+            ResponseInputItem::FunctionCallOutput { output, .. } => {
+                let content = output.text_content().unwrap_or_default();
+                assert!(
+                    content.contains("direct tool calls are disabled for this dynamic tool"),
+                    "unexpected tool call message: {content}",
                 );
             }
             other => panic!("expected function call output, got {other:?}"),

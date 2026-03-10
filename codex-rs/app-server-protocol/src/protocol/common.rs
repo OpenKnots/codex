@@ -319,6 +319,16 @@ client_request_definitions! {
         params: v2::PluginUninstallParams,
         response: v2::PluginUninstallResponse,
     },
+    #[experimental("toolProvider/register")]
+    ToolProviderRegister => "toolProvider/register" {
+        params: v2::ToolProviderRegisterParams,
+        response: v2::ToolProviderRegisterResponse,
+    },
+    #[experimental("toolProvider/unregister")]
+    ToolProviderUnregister => "toolProvider/unregister" {
+        params: v2::ToolProviderUnregisterParams,
+        response: v2::ToolProviderUnregisterResponse,
+    },
     TurnStart => "turn/start" {
         params: v2::TurnStartParams,
         inspect_params: true,

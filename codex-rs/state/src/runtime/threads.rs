@@ -70,6 +70,8 @@ ORDER BY position ASC
                 name: row.try_get("name")?,
                 description: row.try_get("description")?,
                 input_schema,
+                inject_into_context: true,
+                provider_owned: false,
             });
         }
         Ok(Some(tools))

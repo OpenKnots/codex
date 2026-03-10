@@ -73,6 +73,7 @@ mod outgoing_message;
 mod server_request_error;
 mod thread_state;
 mod thread_status;
+mod tool_provider;
 mod transport;
 
 pub use crate::error_code::INPUT_TOO_LARGE_ERROR_CODE;

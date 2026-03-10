@@ -3,6 +3,7 @@ use anyhow::Result;
 use anyhow::bail;
 use app_test_support::create_mock_responses_server_sequence_unchecked;
 use codex_app_server_protocol::ClientInfo;
+use codex_app_server_protocol::InitializeCapabilities;
 use codex_app_server_protocol::InitializeParams;
 use codex_app_server_protocol::JSONRPCError;
 use codex_app_server_protocol::JSONRPCMessage;
@@ -197,7 +198,10 @@ pub(super) async fn send_initialize_request(
             title: Some("WebSocket Test Client".to_string()),
             version: "0.1.0".to_string(),
         },
-        capabilities: None,
+        capabilities: Some(InitializeCapabilities {
+            experimental_api: true,
+            ..Default::default()
+        }),
     };
     send_request(
         stream,

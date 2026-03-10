@@ -276,6 +276,7 @@ export type { ThreadUnsubscribeParams } from "./ThreadUnsubscribeParams";
 export type { ThreadUnsubscribeResponse } from "./ThreadUnsubscribeResponse";
 export type { ThreadUnsubscribeStatus } from "./ThreadUnsubscribeStatus";
 export type { TokenUsageBreakdown } from "./TokenUsageBreakdown";
+export type { ToolProviderToolSpec } from "./ToolProviderToolSpec";
 export type { ToolRequestUserInputAnswer } from "./ToolRequestUserInputAnswer";
 export type { ToolRequestUserInputOption } from "./ToolRequestUserInputOption";
 export type { ToolRequestUserInputParams } from "./ToolRequestUserInputParams";

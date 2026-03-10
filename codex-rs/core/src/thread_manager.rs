@@ -312,6 +312,10 @@ impl ThreadManager {
         self.state.get_thread(thread_id).await
     }
 
+    pub async fn loaded_threads(&self) -> Vec<Arc<CodexThread>> {
+        self.state.threads.read().await.values().cloned().collect()
+    }
+
     pub async fn start_thread(&self, config: Config) -> CodexResult<NewThread> {
         // Box delegated thread-spawn futures so these convenience wrappers do
         // not inline the full spawn path into every caller's async state.

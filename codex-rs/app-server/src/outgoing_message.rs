@@ -92,6 +92,17 @@ impl ThreadScopedOutgoingMessageSender {
             .await
     }
 
+    pub(crate) async fn send_request_to_connection(
+        &self,
+        connection_id: ConnectionId,
+        payload: ServerRequestPayload,
+    ) -> (RequestId, oneshot::Receiver<ClientRequestResult>) {
+        let connection_ids = [connection_id];
+        self.outgoing
+            .send_request_to_connections(Some(&connection_ids), payload, Some(self.thread_id))
+            .await
+    }
+
     pub(crate) async fn send_server_notification(&self, notification: ServerNotification) {
         if self.connection_ids.is_empty() {
             return;
@@ -133,6 +144,10 @@ impl ThreadScopedOutgoingMessageSender {
         error: JSONRPCErrorError,
     ) {
         self.outgoing.send_error(request_id, error).await;
+    }
+
+    pub(crate) async fn cancel_request(&self, request_id: &RequestId) -> bool {
+        self.outgoing.cancel_request(request_id).await
     }
 }
 

@@ -12,6 +12,7 @@ use crate::external_agent_config_api::ExternalAgentConfigApi;
 use crate::outgoing_message::ConnectionId;
 use crate::outgoing_message::ConnectionRequestId;
 use crate::outgoing_message::OutgoingMessageSender;
+use crate::tool_provider::ToolProviderRegistry;
 use crate::transport::AppServerTransport;
 use async_trait::async_trait;
 use codex_app_server_protocol::ChatgptAuthTokensRefreshParams;
@@ -203,6 +204,7 @@ impl MessageProcessor {
             .plugins_manager()
             .maybe_start_curated_repo_sync_for_config(&config);
         let cloud_requirements = Arc::new(RwLock::new(cloud_requirements));
+        let tool_provider_registry = ToolProviderRegistry::default();
         let codex_message_processor = CodexMessageProcessor::new(CodexMessageProcessorArgs {
             auth_manager,
             thread_manager: Arc::clone(&thread_manager),
@@ -213,6 +215,7 @@ impl MessageProcessor {
             cloud_requirements: cloud_requirements.clone(),
             feedback,
             log_db,
+            tool_provider_registry,
         });
         let config_api = ConfigApi::new(
             config.codex_home.clone(),

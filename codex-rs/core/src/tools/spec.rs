@@ -2148,10 +2148,13 @@ pub(crate) fn build_specs(
 
     if !dynamic_tools.is_empty() {
         for tool in dynamic_tools {
+            builder.register_handler(tool.name.clone(), dynamic_tool_handler.clone());
+            if !tool.inject_into_context {
+                continue;
+            }
             match dynamic_tool_to_openai_tool(tool) {
                 Ok(converted_tool) => {
                     builder.push_spec(ToolSpec::Function(converted_tool));
-                    builder.register_handler(tool.name.clone(), dynamic_tool_handler.clone());
                 }
                 Err(e) => {
                     tracing::error!(

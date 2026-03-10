@@ -934,6 +934,18 @@ If the session approval policy uses `Reject` with `request_permissions: true`, t
 
 `dynamicTools` on `thread/start` and the corresponding `item/tool/call` request/response flow are experimental APIs. To enable them, set `initialize.params.capabilities.experimentalApi = true`.
 
+Clients can also register connection-owned dynamic tools with the experimental `toolProvider/register` and `toolProvider/unregister` requests over either `stdio://` or websocket transports. Registered tool-provider specs include:
+
+- `name`
+- `description`
+- `inputSchema`
+- `defaultTimeoutMs`
+- `injectIntoContext`
+
+If `injectIntoContext` is `true`, the tool is exposed to the model as a function tool for future turns. If it is `false`, the tool remains callable only through `js_repl` via `codex.tool(...)` and is not injected into model context.
+
+For provider-owned tools, the app-server routes `item/tool/call` only to the connection that registered the tool and applies that tool's `defaultTimeoutMs` while waiting for the client response.
+
 When a dynamic tool is invoked during a turn, the server sends an `item/tool/call` JSON-RPC request to the client:
 
 ```json

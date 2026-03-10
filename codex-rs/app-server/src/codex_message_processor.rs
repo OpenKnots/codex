@@ -160,6 +160,10 @@ use codex_app_server_protocol::ThreadUnarchivedNotification;
 use codex_app_server_protocol::ThreadUnsubscribeParams;
 use codex_app_server_protocol::ThreadUnsubscribeResponse;
 use codex_app_server_protocol::ThreadUnsubscribeStatus;
+use codex_app_server_protocol::ToolProviderRegisterParams;
+use codex_app_server_protocol::ToolProviderRegisterResponse;
+use codex_app_server_protocol::ToolProviderUnregisterParams;
+use codex_app_server_protocol::ToolProviderUnregisterResponse;
 use codex_app_server_protocol::Turn;
 use codex_app_server_protocol::TurnInterruptParams;
 use codex_app_server_protocol::TurnStartParams;
@@ -310,6 +314,7 @@ use crate::filters::source_kind_matches;
 use crate::thread_state::ThreadListenerCommand;
 use crate::thread_state::ThreadState;
 use crate::thread_state::ThreadStateManager;
+use crate::tool_provider::ToolProviderRegistry;
 
 const THREAD_LIST_DEFAULT_LIMIT: usize = 25;
 const THREAD_LIST_MAX_LIMIT: usize = 100;
@@ -384,6 +389,7 @@ pub(crate) struct CodexMessageProcessor {
     thread_state_manager: ThreadStateManager,
     thread_watch_manager: ThreadWatchManager,
     command_exec_manager: CommandExecManager,
+    tool_provider_registry: ToolProviderRegistry,
     pending_fuzzy_searches: Arc<Mutex<HashMap<String, Arc<AtomicBool>>>>,
     fuzzy_search_sessions: Arc<Mutex<HashMap<String, FuzzyFileSearchSession>>>,
     feedback: CodexFeedback,
@@ -404,6 +410,7 @@ struct ListenerTaskContext {
     thread_state_manager: ThreadStateManager,
     outgoing: Arc<OutgoingMessageSender>,
     thread_watch_manager: ThreadWatchManager,
+    tool_provider_registry: ToolProviderRegistry,
     fallback_model_provider: String,
     codex_home: PathBuf,
 }
@@ -424,6 +431,7 @@ pub(crate) struct CodexMessageProcessorArgs {
     pub(crate) cloud_requirements: Arc<RwLock<CloudRequirementsLoader>>,
     pub(crate) feedback: CodexFeedback,
     pub(crate) log_db: Option<LogDbLayer>,
+    pub(crate) tool_provider_registry: ToolProviderRegistry,
 }
 
 impl CodexMessageProcessor {
@@ -484,6 +492,7 @@ impl CodexMessageProcessor {
             cloud_requirements,
             feedback,
             log_db,
+            tool_provider_registry,
         } = args;
         Self {
             auth_manager,
@@ -498,6 +507,7 @@ impl CodexMessageProcessor {
             thread_state_manager: ThreadStateManager::new(),
             thread_watch_manager: ThreadWatchManager::new_with_outgoing(outgoing),
             command_exec_manager: CommandExecManager::default(),
+            tool_provider_registry,
             pending_fuzzy_searches: Arc::new(Mutex::new(HashMap::new())),
             fuzzy_search_sessions: Arc::new(Mutex::new(HashMap::new())),
             feedback,
@@ -728,6 +738,14 @@ impl CodexMessageProcessor {
             }
             ClientRequest::PluginUninstall { request_id, params } => {
                 self.plugin_uninstall(to_connection_request_id(request_id), params)
+                    .await;
+            }
+            ClientRequest::ToolProviderRegister { request_id, params } => {
+                self.tool_provider_register(to_connection_request_id(request_id), params)
+                    .await;
+            }
+            ClientRequest::ToolProviderUnregister { request_id, params } => {
+                self.tool_provider_unregister(to_connection_request_id(request_id), params)
                     .await;
             }
             ClientRequest::TurnStart { request_id, params } => {
@@ -1844,6 +1862,7 @@ impl CodexMessageProcessor {
             thread_state_manager: self.thread_state_manager.clone(),
             outgoing: Arc::clone(&self.outgoing),
             thread_watch_manager: self.thread_watch_manager.clone(),
+            tool_provider_registry: self.tool_provider_registry.clone(),
             fallback_model_provider: self.config.model_provider_id.clone(),
             codex_home: self.config.codex_home.clone(),
         };
@@ -1923,6 +1942,8 @@ impl CodexMessageProcessor {
                     name: tool.name,
                     description: tool.description,
                     input_schema: tool.input_schema,
+                    inject_into_context: tool.inject_into_context,
+                    provider_owned: false,
                 })
                 .collect()
         };
@@ -1944,6 +1965,14 @@ impl CodexMessageProcessor {
                     session_configured,
                     ..
                 } = new_conv;
+                thread
+                    .update_registered_dynamic_tools(
+                        listener_task_context
+                            .tool_provider_registry
+                            .snapshot_dynamic_tools()
+                            .await,
+                    )
+                    .await;
                 let config_snapshot = thread.config_snapshot().await;
                 let mut thread = build_thread_from_snapshot(
                     thread_id,
@@ -3139,6 +3168,23 @@ impl CodexMessageProcessor {
         self.thread_manager.subscribe_thread_created()
     }
 
+    async fn sync_registered_dynamic_tools_for_thread(&self, thread: &CodexThread) {
+        thread
+            .update_registered_dynamic_tools(
+                self.tool_provider_registry.snapshot_dynamic_tools().await,
+            )
+            .await;
+    }
+
+    async fn refresh_registered_dynamic_tools_for_loaded_threads(&self) {
+        let dynamic_tools = self.tool_provider_registry.snapshot_dynamic_tools().await;
+        for thread in self.thread_manager.loaded_threads().await {
+            thread
+                .update_registered_dynamic_tools(dynamic_tools.clone())
+                .await;
+        }
+    }
+
     pub(crate) async fn connection_initialized(&self, connection_id: ConnectionId) {
         self.thread_state_manager
             .connection_initialized(connection_id)
@@ -3152,6 +3198,14 @@ impl CodexMessageProcessor {
         self.thread_state_manager
             .remove_connection(connection_id)
             .await;
+        if self
+            .tool_provider_registry
+            .remove_connection(connection_id)
+            .await
+        {
+            self.refresh_registered_dynamic_tools_for_loaded_threads()
+                .await;
+        }
     }
 
     pub(crate) fn subscribe_running_assistant_turn_count(&self) -> watch::Receiver<usize> {
@@ -3165,6 +3219,8 @@ impl CodexMessageProcessor {
         connection_ids: Vec<ConnectionId>,
     ) {
         if let Ok(thread) = self.thread_manager.get_thread(thread_id).await {
+            self.sync_registered_dynamic_tools_for_thread(thread.as_ref())
+                .await;
             let config_snapshot = thread.config_snapshot().await;
             let loaded_thread =
                 build_thread_from_snapshot(thread_id, &config_snapshot, thread.rollout_path());
@@ -3296,6 +3352,8 @@ impl CodexMessageProcessor {
                 thread,
                 session_configured,
             }) => {
+                self.sync_registered_dynamic_tools_for_thread(thread.as_ref())
+                    .await;
                 let SessionConfiguredEvent { rollout_path, .. } = session_configured;
                 let Some(rollout_path) = rollout_path else {
                     self.send_internal_error(
@@ -3803,6 +3861,7 @@ impl CodexMessageProcessor {
 
         let NewThread {
             thread_id,
+            thread,
             session_configured,
             ..
         } = match self
@@ -3834,6 +3893,8 @@ impl CodexMessageProcessor {
                 return;
             }
         };
+        self.sync_registered_dynamic_tools_for_thread(thread.as_ref())
+            .await;
 
         let SessionConfiguredEvent { rollout_path, .. } = session_configured;
         let Some(rollout_path) = rollout_path else {
@@ -5659,6 +5720,52 @@ impl CodexMessageProcessor {
         }
     }
 
+    async fn tool_provider_register(
+        &self,
+        request_id: ConnectionRequestId,
+        params: ToolProviderRegisterParams,
+    ) {
+        match self
+            .tool_provider_registry
+            .register(request_id.connection_id, params.tool)
+            .await
+        {
+            Ok(()) => {
+                self.refresh_registered_dynamic_tools_for_loaded_threads()
+                    .await;
+                self.outgoing
+                    .send_response(request_id, ToolProviderRegisterResponse {})
+                    .await;
+            }
+            Err(message) => {
+                self.send_invalid_request_error(request_id, message).await;
+            }
+        }
+    }
+
+    async fn tool_provider_unregister(
+        &self,
+        request_id: ConnectionRequestId,
+        params: ToolProviderUnregisterParams,
+    ) {
+        match self
+            .tool_provider_registry
+            .unregister(request_id.connection_id, &params.name)
+            .await
+        {
+            Ok(()) => {
+                self.refresh_registered_dynamic_tools_for_loaded_threads()
+                    .await;
+                self.outgoing
+                    .send_response(request_id, ToolProviderUnregisterResponse {})
+                    .await;
+            }
+            Err(message) => {
+                self.send_invalid_request_error(request_id, message).await;
+            }
+        }
+    }
+
     async fn turn_start(
         &self,
         request_id: ConnectionRequestId,
@@ -5682,6 +5789,8 @@ impl CodexMessageProcessor {
             self.outgoing.send_error(request_id, error).await;
             return;
         }
+        self.sync_registered_dynamic_tools_for_thread(thread.as_ref())
+            .await;
 
         let collaboration_modes_config = CollaborationModesConfig {
             default_mode_request_user_input: thread.enabled(Feature::DefaultModeRequestUserInput),
@@ -6277,6 +6386,7 @@ impl CodexMessageProcessor {
                 thread_state_manager: self.thread_state_manager.clone(),
                 outgoing: Arc::clone(&self.outgoing),
                 thread_watch_manager: self.thread_watch_manager.clone(),
+                tool_provider_registry: self.tool_provider_registry.clone(),
                 fallback_model_provider: self.config.model_provider_id.clone(),
                 codex_home: self.config.codex_home.clone(),
             },
@@ -6364,6 +6474,7 @@ impl CodexMessageProcessor {
                 thread_state_manager: self.thread_state_manager.clone(),
                 outgoing: Arc::clone(&self.outgoing),
                 thread_watch_manager: self.thread_watch_manager.clone(),
+                tool_provider_registry: self.tool_provider_registry.clone(),
                 fallback_model_provider: self.config.model_provider_id.clone(),
                 codex_home: self.config.codex_home.clone(),
             },
@@ -6395,6 +6506,7 @@ impl CodexMessageProcessor {
             thread_manager,
             thread_state_manager,
             thread_watch_manager,
+            tool_provider_registry,
             fallback_model_provider,
             codex_home,
         } = listener_task_context;
@@ -6479,6 +6591,7 @@ impl CodexMessageProcessor {
                             conversation.clone(),
                             thread_manager.clone(),
                             thread_outgoing,
+                            tool_provider_registry.clone(),
                             thread_state.clone(),
                             thread_watch_manager.clone(),
                             api_version,
@@ -7831,6 +7944,7 @@ mod tests {
             name: "my_tool".to_string(),
             description: "test".to_string(),
             input_schema: json!({"type": "null"}),
+            inject_into_context: true,
         }];
         let err = validate_dynamic_tools(&tools).expect_err("invalid schema");
         assert!(err.contains("my_tool"), "unexpected error: {err}");
@@ -7843,6 +7957,7 @@ mod tests {
             description: "test".to_string(),
             // Missing `type` is common; core sanitizes these to a supported schema.
             input_schema: json!({"properties": {}}),
+            inject_into_context: true,
         }];
         validate_dynamic_tools(&tools).expect("valid schema");
     }

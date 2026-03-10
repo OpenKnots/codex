@@ -10,15 +10,22 @@ pub struct DynamicToolSpec {
     pub name: String,
     pub description: String,
     pub input_schema: JsonValue,
+    #[serde(default = "default_inject_into_context")]
+    pub inject_into_context: bool,
+    #[serde(default)]
+    pub provider_owned: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, JsonSchema, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct DynamicToolCallRequest {
+    pub thread_id: String,
     pub call_id: String,
     pub turn_id: String,
     pub tool: String,
     pub arguments: JsonValue,
+    #[serde(default)]
+    pub provider_owned: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, JsonSchema, TS)]
@@ -36,4 +43,8 @@ pub enum DynamicToolCallOutputContentItem {
     InputText { text: String },
     #[serde(rename_all = "camelCase")]
     InputImage { image_url: String },
+}
+
+fn default_inject_into_context() -> bool {
+    true
 }
