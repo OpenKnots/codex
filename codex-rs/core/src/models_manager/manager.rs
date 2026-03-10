@@ -232,12 +232,12 @@ impl ModelsManager {
     ) -> ModelInfo {
         if let Some(custom_model) = custom_model {
             let mut config = config.clone();
-            config.model_context_window = config
+            config.model_context_window = custom_model
                 .model_context_window
-                .or(custom_model.model_context_window);
-            config.model_auto_compact_token_limit = config
+                .or(config.model_context_window);
+            config.model_auto_compact_token_limit = custom_model
                 .model_auto_compact_token_limit
-                .or(custom_model.model_auto_compact_token_limit);
+                .or(config.model_auto_compact_token_limit);
             let model_info =
                 Self::construct_model_info_for_custom_alias(model, custom_model, candidates);
             return model_info::with_config_overrides(model_info, &config);
@@ -1119,6 +1119,46 @@ mod tests {
 
         assert_eq!(model_info.slug, alias);
         assert_eq!(model_info.request_model.as_deref(), Some("gpt-5.4"));
+        assert_eq!(model_info.context_window, Some(1_000_000));
+        assert_eq!(model_info.auto_compact_token_limit, Some(800_000));
+    }
+
+    #[tokio::test]
+    async fn get_model_info_prefers_custom_alias_context_over_global_config() {
+        let codex_home = tempdir().expect("temp dir");
+        let mut config = ConfigBuilder::default()
+            .codex_home(codex_home.path().to_path_buf())
+            .build()
+            .await
+            .expect("load default test config");
+
+        config.model_context_window = Some(250_000);
+        config.model_auto_compact_token_limit = Some(200_000);
+
+        let alias = "gpt-5.4 1m".to_string();
+        let custom_model = CustomModelConfig {
+            model: "gpt-5.4".to_string(),
+            model_context_window: Some(1_000_000),
+            model_auto_compact_token_limit: Some(800_000),
+        };
+        config
+            .custom_models
+            .insert(alias.clone(), custom_model.clone());
+
+        let auth_manager =
+            AuthManager::from_auth_for_testing(CodexAuth::from_api_key("Test API Key"));
+        let manager = ModelsManager::new(
+            codex_home.path().to_path_buf(),
+            auth_manager,
+            Some(ModelsResponse {
+                models: vec![remote_model("gpt-5.4", "GPT 5.4", 0)],
+            }),
+            HashMap::from([(alias.clone(), custom_model)]),
+            CollaborationModesConfig::default(),
+        );
+
+        let model_info = manager.get_model_info(&alias, &config).await;
+
         assert_eq!(model_info.context_window, Some(1_000_000));
         assert_eq!(model_info.auto_compact_token_limit, Some(800_000));
     }
