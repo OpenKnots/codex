@@ -2697,7 +2697,7 @@ async fn set_feature_enabled_updates_profile() -> anyhow::Result<()> {
 
     ConfigEditsBuilder::new(codex_home.path())
         .with_profile(Some("dev"))
-        .set_feature_enabled("guardian_approval", true)
+        .set_feature_enabled("smart_approvals", true)
         .apply()
         .await?;
 
@@ -2712,14 +2712,14 @@ async fn set_feature_enabled_updates_profile() -> anyhow::Result<()> {
         profile
             .features
             .as_ref()
-            .and_then(|features| features.entries.get("guardian_approval")),
+            .and_then(|features| features.entries.get("smart_approvals")),
         Some(&true),
     );
     assert_eq!(
         parsed
             .features
             .as_ref()
-            .and_then(|features| features.entries.get("guardian_approval")),
+            .and_then(|features| features.entries.get("smart_approvals")),
         None,
     );
 
@@ -2732,13 +2732,13 @@ async fn set_feature_enabled_clears_default_false_feature_in_profile() -> anyhow
 
     ConfigEditsBuilder::new(codex_home.path())
         .with_profile(Some("dev"))
-        .set_feature_enabled("guardian_approval", true)
+        .set_feature_enabled("smart_approvals", true)
         .apply()
         .await?;
 
     ConfigEditsBuilder::new(codex_home.path())
         .with_profile(Some("dev"))
-        .set_feature_enabled("guardian_approval", false)
+        .set_feature_enabled("smart_approvals", false)
         .apply()
         .await?;
 
@@ -2753,14 +2753,14 @@ async fn set_feature_enabled_clears_default_false_feature_in_profile() -> anyhow
         profile
             .features
             .as_ref()
-            .and_then(|features| features.entries.get("guardian_approval")),
+            .and_then(|features| features.entries.get("smart_approvals")),
         None,
     );
     assert_eq!(
         parsed
             .features
             .as_ref()
-            .and_then(|features| features.entries.get("guardian_approval")),
+            .and_then(|features| features.entries.get("smart_approvals")),
         None,
     );
 
@@ -4570,7 +4570,7 @@ async fn approval_review_policy_stays_manual_only_when_guardian_feature_is_enabl
     std::fs::write(
         codex_home.path().join(CONFIG_TOML_FILE),
         r#"[features]
-guardian_approval = true
+smart_approvals = true
 "#,
     )?;
 
@@ -4606,7 +4606,7 @@ async fn approval_review_policy_requires_guardian_feature_when_set_in_config() -
 
     assert_eq!(
         err.to_string(),
-        "`approval_review_policy` requires `features.guardian_approval = true`"
+        "`approval_review_policy` requires `features.smart_approvals = true`"
     );
     Ok(())
 }
@@ -4633,7 +4633,7 @@ approval_review_policy = "auto-only"
 
     assert_eq!(
         err.to_string(),
-        "`approval_review_policy` requires `features.guardian_approval = true`"
+        "`approval_review_policy` requires `features.smart_approvals = true`"
     );
     Ok(())
 }
