@@ -266,12 +266,8 @@ fn build_source(user_code: &str, enabled_tools: &[EnabledTool]) -> Result<String
 
 fn build_enabled_tools(exec: &ExecContext) -> Vec<EnabledTool> {
     let nested_tools_config = exec.turn.tools_config.for_code_mode_nested_tools();
-    let router = ToolRouter::from_config(
-        &nested_tools_config,
-        None,
-        None,
-        exec.turn.dynamic_tools.as_slice(),
-    );
+    let router =
+        ToolRouter::from_config(&nested_tools_config, None, None, &exec.turn.dynamic_tools);
     let mut out = router
         .specs()
         .into_iter()
@@ -296,12 +292,7 @@ async fn call_nested_tool(
     }
 
     let nested_config = exec.turn.tools_config.for_code_mode_nested_tools();
-    let router = ToolRouter::from_config(
-        &nested_config,
-        None,
-        None,
-        exec.turn.dynamic_tools.as_slice(),
-    );
+    let router = ToolRouter::from_config(&nested_config, None, None, &exec.turn.dynamic_tools);
 
     let specs = router.specs();
     let payload = match build_nested_tool_payload(&specs, &tool_name, input) {

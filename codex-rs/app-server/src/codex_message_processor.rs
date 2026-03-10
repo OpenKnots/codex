@@ -330,6 +330,7 @@ struct ThreadListFilters {
 // Duration before a ChatGPT login attempt is abandoned.
 const LOGIN_CHATGPT_TIMEOUT: Duration = Duration::from_secs(10 * 60);
 const APP_LIST_LOAD_TIMEOUT: Duration = Duration::from_secs(90);
+const TOOL_PROVIDER_DISCONNECT_GRACE_PERIOD: Duration = Duration::from_secs(5);
 struct ActiveLogin {
     shutdown_handle: ShutdownHandle,
     login_id: Uuid,
@@ -3203,6 +3204,23 @@ impl CodexMessageProcessor {
             .remove_connection(connection_id)
             .await
         {
+            let outgoing = Arc::clone(&self.outgoing);
+            tokio::spawn(async move {
+                tokio::time::sleep(TOOL_PROVIDER_DISCONNECT_GRACE_PERIOD).await;
+                let _ = outgoing
+                    .cancel_pending_dynamic_tool_requests_for_connection(
+                        connection_id,
+                        JSONRPCErrorError {
+                            code: INTERNAL_ERROR_CODE,
+                            message: "dynamic tool provider is unavailable".to_string(),
+                            data: Some(serde_json::json!({
+                                "reason":
+                                    crate::server_request_error::DYNAMIC_TOOL_PROVIDER_DISCONNECTED_PENDING_REQUEST_ERROR_REASON
+                            })),
+                        },
+                    )
+                    .await;
+            });
             self.refresh_registered_dynamic_tools_for_loaded_threads()
                 .await;
         }

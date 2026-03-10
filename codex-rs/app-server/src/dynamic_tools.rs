@@ -12,6 +12,7 @@ use tracing::error;
 
 use crate::outgoing_message::ClientRequestResult;
 use crate::outgoing_message::ThreadScopedOutgoingMessageSender;
+use crate::server_request_error::is_dynamic_tool_provider_disconnected_server_request_error;
 use crate::server_request_error::is_turn_transition_server_request_error;
 
 pub(crate) async fn on_call_response(
@@ -41,6 +42,9 @@ pub(crate) async fn on_call_response(
     let (response, _error) = match response {
         Ok(Ok(value)) => decode_response(value),
         Ok(Err(err)) if is_turn_transition_server_request_error(&err) => return,
+        Ok(Err(err)) if is_dynamic_tool_provider_disconnected_server_request_error(&err) => {
+            fallback_response("dynamic tool provider is unavailable")
+        }
         Ok(Err(err)) => {
             error!("request failed with client error: {err:?}");
             fallback_response("dynamic tool request failed")

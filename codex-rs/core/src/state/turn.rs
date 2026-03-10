@@ -79,11 +79,15 @@ pub(crate) struct TurnState {
     pending_request_permissions: HashMap<String, oneshot::Sender<RequestPermissionsResponse>>,
     pending_user_input: HashMap<String, oneshot::Sender<RequestUserInputResponse>>,
     pending_elicitations: HashMap<(String, RequestId), oneshot::Sender<ElicitationResponse>>,
-    pending_dynamic_tools: HashMap<String, oneshot::Sender<DynamicToolResponse>>,
+    pending_dynamic_tools: HashMap<String, PendingDynamicToolResponse>,
     pending_input: Vec<ResponseInputItem>,
     granted_permissions: Option<PermissionProfile>,
     pub(crate) tool_calls: u64,
     pub(crate) token_usage_at_turn_start: TokenUsage,
+}
+
+pub(crate) struct PendingDynamicToolResponse {
+    response_tx: oneshot::Sender<DynamicToolResponse>,
 }
 
 impl TurnState {
@@ -165,14 +169,18 @@ impl TurnState {
         key: String,
         tx: oneshot::Sender<DynamicToolResponse>,
     ) -> Option<oneshot::Sender<DynamicToolResponse>> {
-        self.pending_dynamic_tools.insert(key, tx)
+        self.pending_dynamic_tools
+            .insert(key, PendingDynamicToolResponse { response_tx: tx })
+            .map(|pending| pending.response_tx)
     }
 
     pub(crate) fn remove_pending_dynamic_tool(
         &mut self,
         key: &str,
     ) -> Option<oneshot::Sender<DynamicToolResponse>> {
-        self.pending_dynamic_tools.remove(key)
+        self.pending_dynamic_tools
+            .remove(key)
+            .map(|pending| pending.response_tx)
     }
 
     pub(crate) fn push_pending_input(&mut self, input: ResponseInputItem) {

@@ -75,6 +75,7 @@ use tokio::time::sleep;
 use tracing_opentelemetry::OpenTelemetrySpanExt;
 use tracing_subscriber::prelude::*;
 
+use codex_protocol::dynamic_tools::DynamicToolSpec;
 use codex_protocol::mcp::CallToolResult as McpCallToolResult;
 use pretty_assertions::assert_eq;
 use rmcp::model::JsonObject;
@@ -3473,6 +3474,64 @@ impl SessionTask for NeverEndingTask {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn update_registered_dynamic_tools_keeps_active_turn_state_frozen() {
+    let (session, turn_context, _rx) = make_session_and_context_with_rx().await;
+    let registered_tool = DynamicToolSpec {
+        name: "provider_tool".to_string(),
+        description: "Provider tool".to_string(),
+        input_schema: json!({
+            "type": "object",
+            "properties": {},
+            "additionalProperties": false
+        }),
+        inject_into_context: true,
+        provider_owned: true,
+    };
+    let input = vec![UserInput::Text {
+        text: "hello".to_string(),
+        text_elements: Vec::new(),
+    }];
+
+    session
+        .spawn_task(
+            Arc::clone(&turn_context),
+            input,
+            NeverEndingTask {
+                kind: TaskKind::Regular,
+                listen_to_cancellation_token: false,
+            },
+        )
+        .await;
+
+    session
+        .update_registered_dynamic_tools(vec![registered_tool.clone()])
+        .await;
+    assert!(turn_context.dynamic_tools.is_empty());
+    {
+        let state = session.state.lock().await;
+        assert_eq!(
+            state.session_configuration.effective_dynamic_tools(),
+            vec![registered_tool.clone()]
+        );
+    }
+
+    session.update_registered_dynamic_tools(Vec::new()).await;
+    assert!(turn_context.dynamic_tools.is_empty());
+
+    {
+        let state = session.state.lock().await;
+        assert!(
+            state
+                .session_configuration
+                .effective_dynamic_tools()
+                .is_empty()
+        );
+    }
+
+    session.abort_all_tasks(TurnAbortReason::Interrupted).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[test_log::test]
 async fn abort_regular_task_emits_turn_aborted_only() {
     let (sess, tc, rx) = make_session_and_context_with_rx().await;
@@ -3830,7 +3889,7 @@ async fn fatal_tool_error_stops_turn_and_reports_error() {
                 .collect(),
         ),
         app_tools,
-        turn_context.dynamic_tools.as_slice(),
+        &turn_context.dynamic_tools,
     );
     let item = ResponseItem::CustomToolCall {
         id: None,

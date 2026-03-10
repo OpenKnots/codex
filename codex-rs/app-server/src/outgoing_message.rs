@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::collections::HashSet;
 use std::sync::Arc;
 use std::sync::atomic::AtomicI64;
 use std::sync::atomic::Ordering;
@@ -64,6 +65,7 @@ struct PendingCallbackEntry {
     callback: oneshot::Sender<ClientRequestResult>,
     thread_id: Option<ThreadId>,
     request: ServerRequest,
+    allowed_responder_connections: Option<HashSet<ConnectionId>>,
 }
 
 impl ThreadScopedOutgoingMessageSender {
@@ -88,6 +90,7 @@ impl ThreadScopedOutgoingMessageSender {
                 Some(self.connection_ids.as_slice()),
                 payload,
                 Some(self.thread_id),
+                false,
             )
             .await
     }
@@ -99,7 +102,7 @@ impl ThreadScopedOutgoingMessageSender {
     ) -> (RequestId, oneshot::Receiver<ClientRequestResult>) {
         let connection_ids = [connection_id];
         self.outgoing
-            .send_request_to_connections(Some(&connection_ids), payload, Some(self.thread_id))
+            .send_request_to_connections(Some(&connection_ids), payload, Some(self.thread_id), true)
             .await
     }
 
@@ -164,7 +167,8 @@ impl OutgoingMessageSender {
         &self,
         request: ServerRequestPayload,
     ) -> (RequestId, oneshot::Receiver<ClientRequestResult>) {
-        self.send_request_to_connections(None, request, None).await
+        self.send_request_to_connections(None, request, None, false)
+            .await
     }
 
     fn next_request_id(&self) -> RequestId {
@@ -176,6 +180,7 @@ impl OutgoingMessageSender {
         connection_ids: Option<&[ConnectionId]>,
         request: ServerRequestPayload,
         thread_id: Option<ThreadId>,
+        restrict_responder_connections: bool,
     ) -> (RequestId, oneshot::Receiver<ClientRequestResult>) {
         let id = self.next_request_id();
         let outgoing_message_id = id.clone();
@@ -190,6 +195,13 @@ impl OutgoingMessageSender {
                     callback: tx_approve,
                     thread_id,
                     request: request.clone(),
+                    allowed_responder_connections: restrict_responder_connections.then(|| {
+                        connection_ids
+                            .unwrap_or_default()
+                            .iter()
+                            .copied()
+                            .collect::<HashSet<_>>()
+                    }),
                 },
             );
         }
@@ -253,8 +265,13 @@ impl OutgoingMessageSender {
         }
     }
 
-    pub(crate) async fn notify_client_response(&self, id: RequestId, result: Result) {
-        let entry = self.take_request_callback(&id).await;
+    pub(crate) async fn notify_client_response(
+        &self,
+        connection_id: ConnectionId,
+        id: RequestId,
+        result: Result,
+    ) {
+        let entry = self.take_request_callback(&id, connection_id).await;
 
         match entry {
             Some((id, entry)) => {
@@ -263,13 +280,18 @@ impl OutgoingMessageSender {
                 }
             }
             None => {
-                warn!("could not find callback for {id:?}");
+                warn!("could not find callback for {id:?} from connection {connection_id:?}");
             }
         }
     }
 
-    pub(crate) async fn notify_client_error(&self, id: RequestId, error: JSONRPCErrorError) {
-        let entry = self.take_request_callback(&id).await;
+    pub(crate) async fn notify_client_error(
+        &self,
+        connection_id: ConnectionId,
+        id: RequestId,
+        error: JSONRPCErrorError,
+    ) {
+        let entry = self.take_request_callback(&id, connection_id).await;
 
         match entry {
             Some((id, entry)) => {
@@ -279,13 +301,14 @@ impl OutgoingMessageSender {
                 }
             }
             None => {
-                warn!("could not find callback for {id:?}");
+                warn!("could not find callback for {id:?} from connection {connection_id:?}");
             }
         }
     }
 
     pub(crate) async fn cancel_request(&self, id: &RequestId) -> bool {
-        self.take_request_callback(id).await.is_some()
+        let mut request_id_to_callback = self.request_id_to_callback.lock().await;
+        request_id_to_callback.remove(id).is_some()
     }
 
     pub(crate) async fn cancel_all_requests(&self, error: Option<JSONRPCErrorError>) {
@@ -307,11 +330,60 @@ impl OutgoingMessageSender {
         }
     }
 
+    pub(crate) async fn cancel_pending_dynamic_tool_requests_for_connection(
+        &self,
+        connection_id: ConnectionId,
+        error: JSONRPCErrorError,
+    ) -> usize {
+        let entries = {
+            let mut request_id_to_callback = self.request_id_to_callback.lock().await;
+            let request_ids = request_id_to_callback
+                .iter()
+                .filter_map(|(request_id, entry)| {
+                    (matches!(entry.request, ServerRequest::DynamicToolCall { .. })
+                        && entry
+                            .allowed_responder_connections
+                            .as_ref()
+                            .is_some_and(|allowed| allowed.contains(&connection_id)))
+                    .then_some(request_id.clone())
+                })
+                .collect::<Vec<_>>();
+
+            let mut entries = Vec::with_capacity(request_ids.len());
+            for request_id in request_ids {
+                if let Some(entry) = request_id_to_callback.remove(&request_id) {
+                    entries.push(entry);
+                }
+            }
+            entries
+        };
+
+        let cancelled = entries.len();
+        for entry in entries {
+            if let Err(err) = entry.callback.send(Err(error.clone())) {
+                let request_id = entry.request.id();
+                warn!("could not notify callback for {request_id:?} due to: {err:?}");
+            }
+        }
+
+        cancelled
+    }
+
     async fn take_request_callback(
         &self,
         id: &RequestId,
+        connection_id: ConnectionId,
     ) -> Option<(RequestId, PendingCallbackEntry)> {
         let mut request_id_to_callback = self.request_id_to_callback.lock().await;
+        let entry = request_id_to_callback.get(id)?;
+        if entry
+            .allowed_responder_connections
+            .as_ref()
+            .is_some_and(|allowed| !allowed.contains(&connection_id))
+        {
+            warn!("rejecting response for {id:?} from unexpected connection {connection_id:?}");
+            return None;
+        }
         request_id_to_callback.remove_entry(id)
     }
 
@@ -814,7 +886,7 @@ mod tests {
         };
 
         outgoing
-            .notify_client_error(request_id, error.clone())
+            .notify_client_error(ConnectionId(0), request_id, error.clone())
             .await;
 
         let result = timeout(Duration::from_secs(1), wait_for_result)
@@ -939,5 +1011,286 @@ mod tests {
                 .await
                 .is_empty()
         );
+    }
+
+    #[tokio::test]
+    async fn wrong_connection_cannot_resolve_targeted_request() {
+        let (tx, _rx) = mpsc::channel::<OutgoingEnvelope>(8);
+        let outgoing = Arc::new(OutgoingMessageSender::new(tx));
+        let thread_id = ThreadId::new();
+        let thread_outgoing = ThreadScopedOutgoingMessageSender::new(
+            outgoing.clone(),
+            vec![ConnectionId(7)],
+            thread_id,
+        );
+
+        let (request_id, wait_for_result) = thread_outgoing
+            .send_request_to_connection(
+                ConnectionId(7),
+                ServerRequestPayload::DynamicToolCall(DynamicToolCallParams {
+                    thread_id: thread_id.to_string(),
+                    turn_id: "turn-1".to_string(),
+                    call_id: "call-0".to_string(),
+                    tool: "tool".to_string(),
+                    arguments: json!({}),
+                }),
+            )
+            .await;
+
+        outgoing
+            .notify_client_response(ConnectionId(9), request_id.clone(), json!({ "ok": true }))
+            .await;
+        let mut wait_for_result = Box::pin(wait_for_result);
+        assert!(
+            timeout(Duration::from_millis(100), &mut wait_for_result)
+                .await
+                .is_err(),
+            "wrong connection should not resolve targeted request",
+        );
+
+        let (request_id, wait_for_result) = thread_outgoing
+            .send_request_to_connection(
+                ConnectionId(7),
+                ServerRequestPayload::DynamicToolCall(DynamicToolCallParams {
+                    thread_id: thread_id.to_string(),
+                    turn_id: "turn-1".to_string(),
+                    call_id: "call-1".to_string(),
+                    tool: "tool".to_string(),
+                    arguments: json!({}),
+                }),
+            )
+            .await;
+        outgoing
+            .notify_client_response(ConnectionId(7), request_id, json!({ "ok": true }))
+            .await;
+        let result = timeout(Duration::from_secs(1), wait_for_result)
+            .await
+            .expect("authorized waiter should resolve")
+            .expect("authorized waiter should receive a callback");
+        assert_eq!(result, Ok(json!({ "ok": true })));
+    }
+
+    #[tokio::test]
+    async fn wrong_connection_cannot_fail_targeted_request() {
+        let (tx, _rx) = mpsc::channel::<OutgoingEnvelope>(8);
+        let outgoing = Arc::new(OutgoingMessageSender::new(tx));
+        let thread_id = ThreadId::new();
+        let thread_outgoing = ThreadScopedOutgoingMessageSender::new(
+            outgoing.clone(),
+            vec![ConnectionId(11)],
+            thread_id,
+        );
+
+        let (request_id, wait_for_result) = thread_outgoing
+            .send_request_to_connection(
+                ConnectionId(11),
+                ServerRequestPayload::ToolRequestUserInput(ToolRequestUserInputParams {
+                    thread_id: thread_id.to_string(),
+                    turn_id: "turn-1".to_string(),
+                    item_id: "call-0".to_string(),
+                    questions: vec![],
+                }),
+            )
+            .await;
+        let error = JSONRPCErrorError {
+            code: INTERNAL_ERROR_CODE,
+            message: "wrong connection".to_string(),
+            data: None,
+        };
+
+        outgoing
+            .notify_client_error(ConnectionId(12), request_id.clone(), error.clone())
+            .await;
+        let mut wait_for_result = Box::pin(wait_for_result);
+        assert!(
+            timeout(Duration::from_millis(100), &mut wait_for_result)
+                .await
+                .is_err(),
+            "wrong connection should not fail targeted request",
+        );
+
+        let (request_id, wait_for_result) = thread_outgoing
+            .send_request_to_connection(
+                ConnectionId(11),
+                ServerRequestPayload::ToolRequestUserInput(ToolRequestUserInputParams {
+                    thread_id: thread_id.to_string(),
+                    turn_id: "turn-1".to_string(),
+                    item_id: "call-1".to_string(),
+                    questions: vec![],
+                }),
+            )
+            .await;
+        outgoing
+            .notify_client_error(ConnectionId(11), request_id, error.clone())
+            .await;
+        let result = timeout(Duration::from_secs(1), wait_for_result)
+            .await
+            .expect("authorized waiter should resolve")
+            .expect("authorized waiter should receive a callback");
+        assert_eq!(result, Err(error));
+    }
+
+    #[tokio::test]
+    async fn disconnect_cancellation_only_resolves_dynamic_tool_requests() {
+        let (tx, _rx) = mpsc::channel::<OutgoingEnvelope>(8);
+        let outgoing = Arc::new(OutgoingMessageSender::new(tx));
+        let thread_id = ThreadId::new();
+        let thread_outgoing = ThreadScopedOutgoingMessageSender::new(
+            outgoing.clone(),
+            vec![ConnectionId(17)],
+            thread_id,
+        );
+
+        let (_dynamic_request_id, dynamic_tool_waiter) = thread_outgoing
+            .send_request_to_connection(
+                ConnectionId(17),
+                ServerRequestPayload::DynamicToolCall(DynamicToolCallParams {
+                    thread_id: thread_id.to_string(),
+                    turn_id: "turn-1".to_string(),
+                    call_id: "call-0".to_string(),
+                    tool: "tool".to_string(),
+                    arguments: json!({}),
+                }),
+            )
+            .await;
+        let (user_input_request_id, user_input_waiter) = thread_outgoing
+            .send_request_to_connection(
+                ConnectionId(17),
+                ServerRequestPayload::ToolRequestUserInput(ToolRequestUserInputParams {
+                    thread_id: thread_id.to_string(),
+                    turn_id: "turn-1".to_string(),
+                    item_id: "call-1".to_string(),
+                    questions: vec![],
+                }),
+            )
+            .await;
+        let error = JSONRPCErrorError {
+            code: INTERNAL_ERROR_CODE,
+            message: "dynamic tool provider is unavailable".to_string(),
+            data: Some(serde_json::json!({
+                "reason":
+                    crate::server_request_error::DYNAMIC_TOOL_PROVIDER_DISCONNECTED_PENDING_REQUEST_ERROR_REASON
+            })),
+        };
+
+        assert_eq!(
+            outgoing
+                .cancel_pending_dynamic_tool_requests_for_connection(
+                    ConnectionId(17),
+                    error.clone(),
+                )
+                .await,
+            1
+        );
+        let dynamic_tool_result = timeout(Duration::from_secs(1), dynamic_tool_waiter)
+            .await
+            .expect("dynamic tool waiter should resolve")
+            .expect("dynamic tool waiter should receive a callback");
+        assert_eq!(dynamic_tool_result, Err(error));
+
+        let mut user_input_waiter = Box::pin(user_input_waiter);
+        assert!(
+            timeout(Duration::from_millis(100), &mut user_input_waiter)
+                .await
+                .is_err(),
+            "non-dynamic targeted requests should remain pending",
+        );
+
+        outgoing
+            .notify_client_response(
+                ConnectionId(17),
+                user_input_request_id,
+                json!({ "ok": true }),
+            )
+            .await;
+        let user_input_result = timeout(Duration::from_secs(1), user_input_waiter)
+            .await
+            .expect("user input waiter should resolve")
+            .expect("user input waiter should receive a callback");
+        assert_eq!(user_input_result, Ok(json!({ "ok": true })));
+    }
+
+    #[tokio::test]
+    async fn late_response_after_disconnect_cancellation_is_ignored() {
+        let (tx, _rx) = mpsc::channel::<OutgoingEnvelope>(8);
+        let outgoing = Arc::new(OutgoingMessageSender::new(tx));
+        let thread_id = ThreadId::new();
+        let thread_outgoing = ThreadScopedOutgoingMessageSender::new(
+            outgoing.clone(),
+            vec![ConnectionId(23)],
+            thread_id,
+        );
+
+        let (request_id, wait_for_result) = thread_outgoing
+            .send_request_to_connection(
+                ConnectionId(23),
+                ServerRequestPayload::DynamicToolCall(DynamicToolCallParams {
+                    thread_id: thread_id.to_string(),
+                    turn_id: "turn-1".to_string(),
+                    call_id: "call-0".to_string(),
+                    tool: "tool".to_string(),
+                    arguments: json!({}),
+                }),
+            )
+            .await;
+        let error = JSONRPCErrorError {
+            code: INTERNAL_ERROR_CODE,
+            message: "dynamic tool provider is unavailable".to_string(),
+            data: Some(serde_json::json!({
+                "reason":
+                    crate::server_request_error::DYNAMIC_TOOL_PROVIDER_DISCONNECTED_PENDING_REQUEST_ERROR_REASON
+            })),
+        };
+
+        assert_eq!(
+            outgoing
+                .cancel_pending_dynamic_tool_requests_for_connection(
+                    ConnectionId(23),
+                    error.clone(),
+                )
+                .await,
+            1
+        );
+        let result = timeout(Duration::from_secs(1), wait_for_result)
+            .await
+            .expect("disconnect waiter should resolve")
+            .expect("disconnect waiter should receive a callback");
+        assert_eq!(result, Err(error));
+
+        outgoing
+            .notify_client_response(ConnectionId(23), request_id, json!({ "ok": true }))
+            .await;
+    }
+
+    #[tokio::test]
+    async fn non_targeted_thread_request_can_be_resolved_by_replayed_connection() {
+        let (tx, _rx) = mpsc::channel::<OutgoingEnvelope>(8);
+        let outgoing = Arc::new(OutgoingMessageSender::new(tx));
+        let thread_id = ThreadId::new();
+        let thread_outgoing = ThreadScopedOutgoingMessageSender::new(
+            outgoing.clone(),
+            vec![ConnectionId(1)],
+            thread_id,
+        );
+
+        let (request_id, wait_for_result) = thread_outgoing
+            .send_request(ServerRequestPayload::ToolRequestUserInput(
+                ToolRequestUserInputParams {
+                    thread_id: thread_id.to_string(),
+                    turn_id: "turn-1".to_string(),
+                    item_id: "call-0".to_string(),
+                    questions: vec![],
+                },
+            ))
+            .await;
+        outgoing
+            .notify_client_response(ConnectionId(99), request_id, json!({ "ok": true }))
+            .await;
+
+        let result = timeout(Duration::from_secs(1), wait_for_result)
+            .await
+            .expect("replayed waiter should resolve")
+            .expect("replayed waiter should receive a callback");
+        assert_eq!(result, Ok(json!({ "ok": true })));
     }
 }

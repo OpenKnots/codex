@@ -152,7 +152,6 @@ impl ToolRouter {
         } = call;
         let payload_outputs_custom = matches!(payload, ToolPayload::Custom { .. });
         let failure_call_id = call_id.clone();
-
         if source == ToolCallSource::Direct
             && turn.tools_config.js_repl_tools_only
             && !matches!(tool_name.as_str(), "js_repl" | "js_repl_reset")
@@ -269,7 +268,7 @@ mod tests {
                     .collect(),
             ),
             app_tools,
-            turn.dynamic_tools.as_slice(),
+            &turn.dynamic_tools,
         );
 
         let call = ToolCall {
@@ -322,7 +321,7 @@ mod tests {
                     .collect(),
             ),
             app_tools,
-            turn.dynamic_tools.as_slice(),
+            &turn.dynamic_tools,
         );
 
         let call = ToolCall {
@@ -369,12 +368,7 @@ mod tests {
 
         let session = Arc::clone(&session);
         let turn = Arc::clone(&turn);
-        let router = ToolRouter::from_config(
-            &turn.tools_config,
-            None,
-            None,
-            turn.dynamic_tools.as_slice(),
-        );
+        let router = ToolRouter::from_config(&turn.tools_config, None, None, &turn.dynamic_tools);
 
         let call = ToolCall {
             tool_name: "hidden_dynamic_tool".to_string(),

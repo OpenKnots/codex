@@ -142,6 +142,17 @@ async fn tool_provider_registration_routes_stdio_dynamic_tool_calls() -> Result<
     let mut mcp = McpProcess::new(codex_home.path()).await?;
     timeout(DEFAULT_READ_TIMEOUT, mcp.initialize()).await??;
 
+    let thread_request_id = mcp
+        .send_thread_start_request(ThreadStartParams::default())
+        .await?;
+    let thread_response: JSONRPCResponse = timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_stream_until_response_message(RequestId::Integer(thread_request_id)),
+    )
+    .await??;
+    let ThreadStartResponse { thread, .. } = to_response::<ThreadStartResponse>(thread_response)?;
+    let thread_id = thread.id.clone();
+
     let register_request_id = mcp
         .send_raw_request(
             "toolProvider/register",
@@ -169,17 +180,6 @@ async fn tool_provider_registration_routes_stdio_dynamic_tool_calls() -> Result<
     )
     .await??;
     let _: ToolProviderRegisterResponse = to_response(register_response)?;
-
-    let thread_request_id = mcp
-        .send_thread_start_request(ThreadStartParams::default())
-        .await?;
-    let thread_response: JSONRPCResponse = timeout(
-        DEFAULT_READ_TIMEOUT,
-        mcp.read_stream_until_response_message(RequestId::Integer(thread_request_id)),
-    )
-    .await??;
-    let ThreadStartResponse { thread, .. } = to_response::<ThreadStartResponse>(thread_response)?;
-    let thread_id = thread.id.clone();
 
     let turn_request_id = mcp
         .send_turn_start_request(TurnStartParams {

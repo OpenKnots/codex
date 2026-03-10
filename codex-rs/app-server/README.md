@@ -944,7 +944,7 @@ Clients can also register connection-owned dynamic tools with the experimental `
 
 If `injectIntoContext` is `true`, the tool is exposed to the model as a function tool for future turns. If it is `false`, the tool remains callable only through `js_repl` via `codex.tool(...)` and is not injected into model context.
 
-For provider-owned tools, the app-server routes `item/tool/call` only to the connection that registered the tool and applies that tool's `defaultTimeoutMs` while waiting for the client response.
+For provider-owned tools, the app-server routes `item/tool/call` only to the connection that registered the tool, ignores replies from other connections for that pending request, applies that tool's `defaultTimeoutMs` while waiting for the client response, and fails any in-flight provider request about 5 seconds after that provider connection disconnects.
 
 When a dynamic tool is invoked during a turn, the server sends an `item/tool/call` JSON-RPC request to the client:
 
