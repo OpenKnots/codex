@@ -147,15 +147,11 @@ pub(crate) type InFlightFuture<'f> =
 pub(crate) struct OutputItemResult {
     pub last_agent_message: Option<String>,
     pub needs_follow_up: bool,
-    pub pending_server_side_compaction: Option<PendingServerSideCompactionCheckpoint>,
+    pub server_side_compaction: Option<ServerSideCompaction>,
     pub tool_future: Option<InFlightFuture<'static>>,
 }
 
-pub(crate) struct PendingServerSideCompactionCheckpoint {
-    // Snapshot the raw history at the moment the compaction item streamed. We cannot build
-    // replacement history yet because later same-turn output may still arrive before
-    // `response.completed`.
-    pub history_at_checkpoint: Vec<ResponseItem>,
+pub(crate) struct ServerSideCompaction {
     pub item: ResponseItem,
     pub turn_item: TurnItem,
 }
@@ -181,12 +177,11 @@ pub(crate) async fn handle_output_item_done(
             Some(TurnItem::ContextCompaction(item)) => item,
             _ => ContextCompactionItem::new(),
         });
-        // Preserve the raw wire event immediately, but defer the committed turn-item lifecycle
-        // until `response.completed` so later streamed output from the same response is not
-        // reordered around the local checkpoint rewrite.
+        // Preserve the raw wire event immediately; the caller rewrites local history inline and
+        // then continues appending later same-turn output after the checkpoint item.
         debug!(
             turn_id = %ctx.turn_context.sub_id,
-            "emitting streamed server-side raw compaction item and buffering committed checkpoint until response.completed"
+            "emitting streamed server-side raw compaction item for immediate local checkpoint apply"
         );
         ctx.sess
             .send_event(
@@ -194,13 +189,7 @@ pub(crate) async fn handle_output_item_done(
                 EventMsg::RawResponseItem(RawResponseItemEvent { item: item.clone() }),
             )
             .await;
-        // Replacement history is derived on `response.completed` from this snapshot plus whatever
-        // else the model streamed afterward.
-        output.pending_server_side_compaction = Some(PendingServerSideCompactionCheckpoint {
-            history_at_checkpoint: ctx.sess.clone_history().await.raw_items().to_vec(),
-            item,
-            turn_item,
-        });
+        output.server_side_compaction = Some(ServerSideCompaction { item, turn_item });
         return Ok(output);
     }
 

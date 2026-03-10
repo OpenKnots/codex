@@ -259,114 +259,38 @@ fn assistant_message_stream_parsers_seed_plan_parser_across_added_and_delta_boun
 }
 
 #[test]
-fn build_server_side_compaction_replacement_history_keeps_current_turn_inputs() {
+fn build_server_side_compaction_replacement_history_replaces_prompt_history() {
     let prior_snapshot = ghost_snapshot("ghost-before");
     let same_turn_snapshot = ghost_snapshot("ghost-during");
-    let history_before_turn = vec![user_message("earlier"), prior_snapshot.clone()];
-    let turn_start_context_items = vec![
-        developer_message("<model_switch>\nuse the new model"),
-        environment_context_message("/fresh"),
-    ];
-    let current_turn_user = user_message("current turn");
-    let skill_injection = skill_message(
-        "<skill>\n<name>demo</name>\n<path>/tmp/skills/demo/SKILL.md</path>\nbody\n</skill>",
-    );
-    let plugin_injection = developer_message("PLUGIN_HINT");
-    let current_turn_tool_output = ResponseItem::FunctionCallOutput {
-        call_id: "call-1".to_string(),
-        output: FunctionCallOutputPayload::from_text("tool result".to_string()),
-    };
     let current_history = vec![
         user_message("earlier"),
         prior_snapshot.clone(),
-        turn_start_context_items[0].clone(),
-        turn_start_context_items[1].clone(),
-        current_turn_user.clone(),
-        skill_injection.clone(),
-        plugin_injection.clone(),
-        current_turn_tool_output.clone(),
+        developer_message("<model_switch>\nuse the new model"),
+        environment_context_message("/fresh"),
+        user_message("current turn"),
+        skill_message(
+            "<skill>\n<name>demo</name>\n<path>/tmp/skills/demo/SKILL.md</path>\nbody\n</skill>",
+        ),
+        developer_message("PLUGIN_HINT"),
+        ResponseItem::FunctionCallOutput {
+            call_id: "call-1".to_string(),
+            output: FunctionCallOutputPayload::from_text("tool result".to_string()),
+        },
         same_turn_snapshot.clone(),
+        ResponseItem::Compaction {
+            encrypted_content: "INLINE_SUMMARY_1".to_string(),
+        },
     ];
     let compaction_item = ResponseItem::Compaction {
-        encrypted_content: "INLINE_SUMMARY".to_string(),
-    };
-
-    let replacement_history = build_server_side_compaction_replacement_history(
-        compaction_item.clone(),
-        &turn_start_context_items,
-        &turn_start_context_items,
-        &history_before_turn,
-        &current_history,
-        &current_history,
-    );
-
-    assert_eq!(
-        replacement_history,
-        vec![
-            turn_start_context_items[0].clone(),
-            turn_start_context_items[1].clone(),
-            current_turn_user,
-            skill_injection,
-            plugin_injection,
-            current_turn_tool_output,
-            compaction_item,
-            prior_snapshot,
-            same_turn_snapshot,
-        ]
-    );
-}
-
-#[test]
-fn build_server_side_compaction_replacement_history_prefers_longer_initial_context_prefix() {
-    let history_before_turn = vec![user_message("earlier")];
-    let turn_start_context_items = vec![developer_message("<model_switch>\nuse the new model")];
-    let compaction_initial_context = vec![
-        turn_start_context_items[0].clone(),
-        environment_context_message("/fresh"),
-    ];
-    let current_turn_user = user_message("current turn");
-    let prior_compaction = ResponseItem::Compaction {
-        encrypted_content: "INLINE_SUMMARY_1".to_string(),
-    };
-    let new_compaction = ResponseItem::Compaction {
         encrypted_content: "INLINE_SUMMARY_2".to_string(),
     };
-    let current_turn_tool_output = ResponseItem::FunctionCallOutput {
-        call_id: "call-1".to_string(),
-        output: FunctionCallOutputPayload::from_text("tool result".to_string()),
-    };
-    let history_at_checkpoint = vec![
-        compaction_initial_context[0].clone(),
-        compaction_initial_context[1].clone(),
-        current_turn_user.clone(),
-        prior_compaction,
-    ];
-    let current_history = vec![
-        history_at_checkpoint[0].clone(),
-        history_at_checkpoint[1].clone(),
-        history_at_checkpoint[2].clone(),
-        history_at_checkpoint[3].clone(),
-        current_turn_tool_output.clone(),
-    ];
 
-    let replacement_history = build_server_side_compaction_replacement_history(
-        new_compaction.clone(),
-        &compaction_initial_context,
-        &turn_start_context_items,
-        &history_before_turn,
-        &history_at_checkpoint,
-        &current_history,
-    );
+    let replacement_history =
+        build_server_side_compaction_replacement_history(compaction_item.clone(), &current_history);
 
     assert_eq!(
         replacement_history,
-        vec![
-            compaction_initial_context[0].clone(),
-            compaction_initial_context[1].clone(),
-            current_turn_user,
-            new_compaction,
-            current_turn_tool_output,
-        ]
+        vec![compaction_item, prior_snapshot, same_turn_snapshot]
     );
 }
 
@@ -3773,7 +3697,7 @@ async fn task_finish_emits_turn_item_lifecycle_for_leftover_pending_user_input()
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn inline_compaction_output_item_buffers_checkpoint_without_committing_turn_item() {
+async fn inline_compaction_output_item_returns_immediate_compaction_apply_signal() {
     let (sess, tc, rx) = make_session_and_context_with_rx().await;
     while rx.try_recv().is_ok() {}
 
@@ -3809,7 +3733,7 @@ async fn inline_compaction_output_item_buffers_checkpoint_without_committing_tur
     .await
     .expect("handle output item");
 
-    assert!(output.pending_server_side_compaction.is_some());
+    assert!(output.server_side_compaction.is_some());
     assert!(output.tool_future.is_none());
     assert!(!output.needs_follow_up);
     assert!(output.last_agent_message.is_none());
@@ -3824,7 +3748,7 @@ async fn inline_compaction_output_item_buffers_checkpoint_without_committing_tur
     ));
     assert!(
         rx.try_recv().is_err(),
-        "expected no committed compaction item lifecycle before response.completed"
+        "expected the caller to decide when to commit the compaction lifecycle"
     );
 }
 

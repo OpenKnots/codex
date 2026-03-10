@@ -20,7 +20,6 @@ use crate::apps::render_apps_section;
 use crate::commit_attribution::commit_message_trailer_instruction;
 use crate::compact;
 use crate::compact::InitialContextInjection;
-use crate::compact::insert_initial_context_before_last_real_user_or_summary;
 use crate::compact::run_inline_auto_compact_task;
 use crate::compact::should_use_remote_compact_task;
 use crate::compact_remote::run_inline_remote_auto_compact_task;
@@ -42,7 +41,7 @@ use crate::realtime_conversation::handle_start as handle_realtime_conversation_s
 use crate::realtime_conversation::handle_text as handle_realtime_conversation_text;
 use crate::rollout::session_index;
 use crate::stream_events_utils::HandleOutputCtx;
-use crate::stream_events_utils::PendingServerSideCompactionCheckpoint;
+use crate::stream_events_utils::ServerSideCompaction;
 use crate::stream_events_utils::handle_non_tool_response_item;
 use crate::stream_events_utils::handle_output_item_done;
 use crate::stream_events_utils::last_assistant_message_from_item;
@@ -3178,25 +3177,14 @@ impl Session {
         state.record_items(items.iter(), turn_context.truncation_policy);
     }
 
-    pub(crate) async fn apply_server_side_compaction_checkpoint(
+    pub(crate) async fn apply_server_side_compaction(
         &self,
         turn_context: &TurnContext,
         item: ResponseItem,
-        compaction_initial_context: &[ResponseItem],
-        turn_start_context_items: &[ResponseItem],
-        history_before_turn: &[ResponseItem],
-        history_at_checkpoint: &[ResponseItem],
     ) {
-        // The server emits compaction as a streamed item before the response is fully complete.
-        // Wait until `response.completed` to rewrite local history so later streamed items from the
-        // same turn can still be appended in wire order before we collapse the checkpoint.
         let current_history = self.clone_history().await;
         let replacement_history = build_server_side_compaction_replacement_history(
             item.clone(),
-            compaction_initial_context,
-            turn_start_context_items,
-            history_before_turn,
-            history_at_checkpoint,
             current_history.raw_items(),
         );
 
@@ -3207,9 +3195,10 @@ impl Session {
         };
         self.replace_compacted_history(replacement_history, reference_context_item, compacted_item)
             .await;
+        self.recompute_token_usage(turn_context).await;
         debug!(
             turn_id = %turn_context.sub_id,
-            "applied local server-side compaction checkpoint"
+            "applied local server-side compaction"
         );
         self.services.session_telemetry.counter(
             "codex.compaction_checkpoint_applied",
@@ -5325,21 +5314,17 @@ pub(crate) async fn run_turn(
     // new user message are recorded. Estimate pending incoming items (context
     // diffs/full reinjection + user input) and trigger compaction preemptively
     // when they would push the thread over the compaction threshold.
-    let mut pending_server_side_compaction =
-        match run_pre_sampling_compact(&sess, &turn_context).await {
-            Ok(pending) => pending,
-            Err(err) => {
-                error!("Failed to run pre-sampling compact: {err}");
-                return None;
-            }
-        };
+    let mut inline_compaction_trigger = match run_pre_sampling_compact(&sess, &turn_context).await {
+        Ok(trigger) => trigger,
+        Err(err) => {
+            error!("Failed to run pre-sampling compact: {err}");
+            return None;
+        }
+    };
 
     let skills_outcome = Some(turn_context.turn_skills.outcome.as_ref());
 
-    let history_before_turn = sess.clone_history().await.raw_items().to_vec();
-    let compaction_initial_context = sess.build_initial_context(turn_context.as_ref()).await;
-    let turn_start_context_items = sess
-        .record_context_updates_and_set_reference_context_item(turn_context.as_ref())
+    sess.record_context_updates_and_set_reference_context_item(turn_context.as_ref())
         .await;
 
     let loaded_plugins = sess
@@ -5563,7 +5548,6 @@ pub(crate) async fn run_turn(
             .map(|user_message| user_message.message())
             .collect::<Vec<String>>();
         let turn_metadata_header = turn_context.turn_metadata_state.current_header_value();
-        let inline_compaction_for_request = pending_server_side_compaction;
         match run_sampling_request(
             Arc::clone(&sess),
             Arc::clone(&turn_context),
@@ -5571,10 +5555,7 @@ pub(crate) async fn run_turn(
             &mut client_session,
             turn_metadata_header.as_deref(),
             sampling_request_input,
-            &compaction_initial_context,
-            &turn_start_context_items,
-            &history_before_turn,
-            inline_compaction_for_request.map(|pending| pending.threshold),
+            inline_server_side_compaction_threshold(&sess, &turn_context),
             &turn_enabled_connectors,
             skills_outcome,
             &mut server_model_warning_emitted_for_turn,
@@ -5583,7 +5564,7 @@ pub(crate) async fn run_turn(
         .await
         {
             Ok(sampling_request_output) => {
-                if let Some(pending_compaction) = inline_compaction_for_request {
+                if let Some(trigger) = inline_compaction_trigger.take() {
                     let result = if sampling_request_output.observed_server_side_compaction {
                         "applied"
                     } else {
@@ -5594,15 +5575,8 @@ pub(crate) async fn run_turn(
                     } else {
                         vec![("reason", "threshold_not_reached")]
                     };
-                    record_compaction_metric(
-                        &sess,
-                        "server_side",
-                        pending_compaction.trigger,
-                        result,
-                        &extra_tags,
-                    );
+                    record_compaction_metric(&sess, "server_side", trigger, result, &extra_tags);
                 }
-                pending_server_side_compaction = None;
                 let SamplingRequestResult {
                     needs_follow_up,
                     last_agent_message: sampling_request_last_agent_message,
@@ -5626,9 +5600,7 @@ pub(crate) async fn run_turn(
 
                 // as long as compaction works well in getting us way below the token limit, we shouldn't worry about being in an infinite loop.
                 if token_limit_reached && needs_follow_up {
-                    if let Some(threshold) =
-                        inline_server_side_compaction_threshold(&sess, &turn_context)
-                    {
+                    if inline_server_side_compaction_threshold(&sess, &turn_context).is_some() {
                         record_compaction_metric(
                             &sess,
                             "server_side",
@@ -5636,10 +5608,7 @@ pub(crate) async fn run_turn(
                             "requested",
                             &[],
                         );
-                        pending_server_side_compaction = Some(PendingServerSideCompaction {
-                            threshold,
-                            trigger: AutoCompactTrigger::AutoFollowUp,
-                        });
+                        inline_compaction_trigger = Some(AutoCompactTrigger::AutoFollowUp);
                     } else {
                         record_inline_compaction_skip(
                             &sess,
@@ -5775,70 +5744,13 @@ impl AutoCompactTrigger {
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-struct PendingServerSideCompaction {
-    threshold: i64,
-    trigger: AutoCompactTrigger,
-}
-
 fn build_server_side_compaction_replacement_history(
     compaction_item: ResponseItem,
-    compaction_initial_context: &[ResponseItem],
-    turn_start_context_items: &[ResponseItem],
-    history_before_turn: &[ResponseItem],
-    history_at_checkpoint: &[ResponseItem],
-    current_history: &[ResponseItem],
+    history_at_compaction: &[ResponseItem],
 ) -> Vec<ResponseItem> {
-    // Rebuild the active turn around the compaction checkpoint:
-    // 1. keep the turn-local items that existed when compaction fired
-    // 2. replace any prior same-turn compaction summary with the newest one
-    // 3. re-append items that arrived later in the same streamed response
-    // 4. reattach ghost snapshots at the end so undo state survives the rewrite
-    let checkpoint_turn_items = history_at_checkpoint
-        .strip_prefix(history_before_turn)
-        .unwrap_or(history_at_checkpoint);
-    let stripped_compaction_initial_context =
-        checkpoint_turn_items.strip_prefix(compaction_initial_context);
-    let stripped_turn_start_context_items =
-        checkpoint_turn_items.strip_prefix(turn_start_context_items);
-    let checkpoint_turn_items = match (
-        stripped_compaction_initial_context,
-        stripped_turn_start_context_items,
-    ) {
-        (Some(after_compaction_initial_context), Some(after_turn_start_context_items)) => {
-            if compaction_initial_context.len() >= turn_start_context_items.len() {
-                after_compaction_initial_context
-            } else {
-                after_turn_start_context_items
-            }
-        }
-        (Some(after_compaction_initial_context), None) => after_compaction_initial_context,
-        (None, Some(after_turn_start_context_items)) => after_turn_start_context_items,
-        (None, None) => checkpoint_turn_items,
-    };
-    let post_checkpoint_turn_items = current_history
-        .strip_prefix(history_at_checkpoint)
-        .unwrap_or_default();
-    let mut replacement_history: Vec<ResponseItem> = checkpoint_turn_items
-        .iter()
-        .filter(|item| !matches!(item, ResponseItem::GhostSnapshot { .. }))
-        .filter(|item| !matches!(item, ResponseItem::Compaction { .. }))
-        .cloned()
-        .collect();
-    replacement_history.push(compaction_item);
+    let mut replacement_history = vec![compaction_item];
     replacement_history.extend(
-        post_checkpoint_turn_items
-            .iter()
-            .filter(|item| !matches!(item, ResponseItem::GhostSnapshot { .. }))
-            .filter(|item| !matches!(item, ResponseItem::Compaction { .. }))
-            .cloned(),
-    );
-    let mut replacement_history = insert_initial_context_before_last_real_user_or_summary(
-        replacement_history,
-        compaction_initial_context.to_vec(),
-    );
-    replacement_history.extend(
-        current_history
+        history_at_compaction
             .iter()
             .filter(|item| matches!(item, ResponseItem::GhostSnapshot { .. }))
             .cloned(),
@@ -5910,14 +5822,17 @@ fn record_inline_compaction_skip(
 async fn run_pre_sampling_compact(
     sess: &Arc<Session>,
     turn_context: &Arc<TurnContext>,
-) -> CodexResult<Option<PendingServerSideCompaction>> {
+) -> CodexResult<Option<AutoCompactTrigger>> {
     let total_usage_tokens_before_compaction = sess.get_total_token_usage().await;
-    maybe_run_previous_model_inline_compact(
+    if maybe_run_previous_model_inline_compact(
         sess,
         turn_context,
         total_usage_tokens_before_compaction,
     )
-    .await?;
+    .await?
+    {
+        return Ok(None);
+    }
     let total_usage_tokens = sess.get_total_token_usage().await;
     let auto_compact_limit = turn_context
         .model_info
@@ -5925,7 +5840,7 @@ async fn run_pre_sampling_compact(
         .unwrap_or(i64::MAX);
     // Compact if the total usage tokens are greater than the auto compact limit
     if total_usage_tokens >= auto_compact_limit {
-        if let Some(threshold) = inline_server_side_compaction_threshold(sess, turn_context) {
+        if inline_server_side_compaction_threshold(sess, turn_context).is_some() {
             record_compaction_metric(
                 sess,
                 "server_side",
@@ -5933,10 +5848,7 @@ async fn run_pre_sampling_compact(
                 "requested",
                 &[],
             );
-            return Ok(Some(PendingServerSideCompaction {
-                threshold,
-                trigger: AutoCompactTrigger::AutoPreTurn,
-            }));
+            return Ok(Some(AutoCompactTrigger::AutoPreTurn));
         }
         record_inline_compaction_skip(sess, turn_context, AutoCompactTrigger::AutoPreTurn);
         run_auto_compact(
@@ -5961,13 +5873,6 @@ async fn maybe_run_previous_model_inline_compact(
     turn_context: &Arc<TurnContext>,
     total_usage_tokens: i64,
 ) -> CodexResult<bool> {
-    // Keep OpenAI auto-compaction on one path. If inline server-side compaction is eligible for
-    // the current turn, let the normal pre-turn inline request handle it instead of running the
-    // older previous-model client-side preflight flow first.
-    if inline_server_side_compaction_threshold(sess, turn_context).is_some() {
-        return Ok(false);
-    }
-
     let Some(previous_turn_settings) = sess.previous_turn_settings().await else {
         return Ok(false);
     };
@@ -6224,9 +6129,6 @@ async fn run_sampling_request(
     client_session: &mut ModelClientSession,
     turn_metadata_header: Option<&str>,
     input: Vec<ResponseItem>,
-    compaction_initial_context: &[ResponseItem],
-    turn_start_context_items: &[ResponseItem],
-    history_before_turn: &[ResponseItem],
     inline_compaction_threshold: Option<i64>,
     explicitly_enabled_connectors: &HashSet<String>,
     skills_outcome: Option<&SkillLoadOutcome>,
@@ -6263,9 +6165,6 @@ async fn run_sampling_request(
             Arc::clone(&turn_diff_tracker),
             server_model_warning_emitted_for_turn,
             &prompt,
-            compaction_initial_context,
-            turn_start_context_items,
-            history_before_turn,
             cancellation_token.child_token(),
         )
         .await
@@ -6988,9 +6887,6 @@ async fn try_run_sampling_request(
     turn_diff_tracker: SharedTurnDiffTracker,
     server_model_warning_emitted_for_turn: &mut bool,
     prompt: &Prompt,
-    compaction_initial_context: &[ResponseItem],
-    turn_start_context_items: &[ResponseItem],
-    history_before_turn: &[ResponseItem],
     cancellation_token: CancellationToken,
 ) -> CodexResult<SamplingRequestResult> {
     feedback_tags!(
@@ -7026,15 +6922,11 @@ async fn try_run_sampling_request(
     let mut needs_follow_up = false;
     let mut last_agent_message: Option<String> = None;
     let mut observed_server_side_compaction = false;
-    let mut pending_server_side_compaction_checkpoint: Option<
-        PendingServerSideCompactionCheckpoint,
-    > = None;
     let mut active_item: Option<TurnItem> = None;
     let mut should_emit_turn_diff = false;
     let plan_mode = turn_context.collaboration_mode.mode == ModeKind::Plan;
     let mut assistant_message_stream_parsers = AssistantMessageStreamParsers::new(plan_mode);
     let mut plan_mode_state = plan_mode.then(|| PlanModeStreamState::new(&turn_context.sub_id));
-    let history_before_turn = Arc::new(history_before_turn.to_vec());
     let receiving_span = trace_span!("receiving_stream");
     let outcome: CodexResult<SamplingRequestResult> = loop {
         let handle_responses = trace_span!(
@@ -7113,8 +7005,14 @@ async fn try_run_sampling_request(
                     .instrument(handle_responses)
                     .await?;
                 observed_server_side_compaction |= saw_server_side_compaction;
-                if let Some(pending_compaction) = output_result.pending_server_side_compaction {
-                    pending_server_side_compaction_checkpoint = Some(pending_compaction);
+                if let Some(ServerSideCompaction { item, turn_item }) =
+                    output_result.server_side_compaction
+                {
+                    sess.apply_server_side_compaction(turn_context.as_ref(), item)
+                        .await;
+                    sess.emit_turn_item_started(&turn_context, &turn_item).await;
+                    sess.emit_turn_item_completed(&turn_context, turn_item)
+                        .await;
                 }
                 if let Some(tool_future) = output_result.tool_future {
                     in_flight.push_back(tool_future);
@@ -7213,39 +7111,8 @@ async fn try_run_sampling_request(
                     &mut assistant_message_stream_parsers,
                 )
                 .await;
-                let mut applied_server_side_compaction_checkpoint = false;
-                if let Some(PendingServerSideCompactionCheckpoint {
-                    history_at_checkpoint,
-                    item,
-                    turn_item,
-                }) = pending_server_side_compaction_checkpoint.take()
-                {
-                    sess.apply_server_side_compaction_checkpoint(
-                        turn_context.as_ref(),
-                        item,
-                        compaction_initial_context,
-                        turn_start_context_items,
-                        history_before_turn.as_slice(),
-                        history_at_checkpoint.as_slice(),
-                    )
+                sess.update_token_usage_info(&turn_context, token_usage.as_ref())
                     .await;
-                    sess.emit_turn_item_started(&turn_context, &turn_item).await;
-                    sess.emit_turn_item_completed(&turn_context, turn_item)
-                        .await;
-                    if let Some(token_usage) = token_usage.as_ref() {
-                        let mut state = sess.state.lock().await;
-                        state.update_token_info_from_usage(
-                            token_usage,
-                            turn_context.model_context_window(),
-                        );
-                    }
-                    sess.recompute_token_usage(&turn_context).await;
-                    applied_server_side_compaction_checkpoint = true;
-                }
-                if !applied_server_side_compaction_checkpoint {
-                    sess.update_token_usage_info(&turn_context, token_usage.as_ref())
-                        .await;
-                }
                 should_emit_turn_diff = true;
 
                 needs_follow_up |= sess.has_pending_input().await;
