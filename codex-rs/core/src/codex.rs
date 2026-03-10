@@ -3185,9 +3185,13 @@ impl Session {
         item: ResponseItem,
     ) {
         let current_history = self.clone_history().await;
-        let replacement_history = build_server_side_compaction_replacement_history(
-            item.clone(),
-            current_history.raw_items(),
+        let mut replacement_history = vec![item.clone()];
+        replacement_history.extend(
+            current_history
+                .raw_items()
+                .iter()
+                .filter(|history_item| matches!(history_item, ResponseItem::GhostSnapshot { .. }))
+                .cloned(),
         );
 
         let reference_context_item = Some(turn_context.to_turn_context_item());
@@ -5707,20 +5711,6 @@ pub(crate) async fn run_turn(
     }
 
     last_agent_message
-}
-
-fn build_server_side_compaction_replacement_history(
-    compaction_item: ResponseItem,
-    history_at_compaction: &[ResponseItem],
-) -> Vec<ResponseItem> {
-    let mut replacement_history = vec![compaction_item];
-    replacement_history.extend(
-        history_at_compaction
-            .iter()
-            .filter(|item| matches!(item, ResponseItem::GhostSnapshot { .. }))
-            .cloned(),
-    );
-    replacement_history
 }
 
 fn inline_server_side_compaction_threshold(
