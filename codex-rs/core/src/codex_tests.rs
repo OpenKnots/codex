@@ -259,7 +259,7 @@ fn assistant_message_stream_parsers_seed_plan_parser_across_added_and_delta_boun
 }
 
 #[test]
-fn build_server_side_compaction_replacement_history_replaces_prompt_history() {
+fn server_side_compaction_replacement_history_keeps_compaction_item_and_ghost_snapshots() {
     let prior_snapshot = ghost_snapshot("ghost-before");
     let same_turn_snapshot = ghost_snapshot("ghost-during");
     let current_history = vec![
@@ -285,8 +285,13 @@ fn build_server_side_compaction_replacement_history_replaces_prompt_history() {
         encrypted_content: "INLINE_SUMMARY_2".to_string(),
     };
 
-    let replacement_history =
-        build_server_side_compaction_replacement_history(compaction_item.clone(), &current_history);
+    let mut replacement_history = vec![compaction_item.clone()];
+    replacement_history.extend(
+        current_history
+            .iter()
+            .filter(|item| matches!(item, ResponseItem::GhostSnapshot { .. }))
+            .cloned(),
+    );
 
     assert_eq!(
         replacement_history,
@@ -2360,6 +2365,7 @@ async fn request_permissions_emits_event_when_reject_policy_allows_requests() {
             }),
             ..Default::default()
         },
+        scope: PermissionGrantScope::Turn,
     };
 
     let handle = tokio::spawn({
@@ -2444,6 +2450,7 @@ async fn request_permissions_returns_empty_grant_when_reject_policy_blocks_reque
         Some(
             codex_protocol::request_permissions::RequestPermissionsResponse {
                 permissions: codex_protocol::models::PermissionProfile::default(),
+                scope: PermissionGrantScope::Turn,
             }
         )
     );
