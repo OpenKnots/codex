@@ -6,6 +6,8 @@ mod collaboration_mode_list;
 mod command_exec;
 mod compaction;
 mod config_rpc;
+#[cfg(unix)]
+mod connection_handling_uds;
 mod connection_handling_websocket;
 #[cfg(unix)]
 mod connection_handling_websocket_unix;

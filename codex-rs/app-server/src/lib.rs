@@ -28,6 +28,8 @@ use crate::transport::OutboundConnectionState;
 use crate::transport::TransportEvent;
 use crate::transport::route_outgoing_envelope;
 use crate::transport::start_stdio_connection;
+#[cfg(unix)]
+use crate::transport::start_unix_domain_socket_acceptor;
 use crate::transport::start_websocket_acceptor;
 use codex_app_server_protocol::ConfigLayerSource;
 use codex_app_server_protocol::ConfigWarningNotification;
@@ -356,10 +358,14 @@ pub async fn run_main_with_transport(
             accept_handle: JoinHandle<()>,
             shutdown_token: CancellationToken,
         },
+        UnixDomainSocket {
+            accept_handle: JoinHandle<()>,
+            shutdown_token: CancellationToken,
+        },
     }
 
     let mut stdio_handles = Vec::<JoinHandle<()>>::new();
-    let transport_runtime = match transport {
+    let transport_runtime = match transport.clone() {
         AppServerTransport::Stdio => {
             start_stdio_connection(transport_event_tx.clone(), &mut stdio_handles).await?;
             TransportRuntime::Stdio
@@ -375,6 +381,30 @@ pub async fn run_main_with_transport(
             TransportRuntime::WebSocket {
                 accept_handle,
                 shutdown_token,
+            }
+        }
+        AppServerTransport::UnixDomainSocket { socket_path } => {
+            #[cfg(unix)]
+            {
+                let shutdown_token = CancellationToken::new();
+                let accept_handle = start_unix_domain_socket_acceptor(
+                    socket_path,
+                    transport_event_tx.clone(),
+                    shutdown_token.clone(),
+                )
+                .await?;
+                TransportRuntime::UnixDomainSocket {
+                    accept_handle,
+                    shutdown_token,
+                }
+            }
+            #[cfg(not(unix))]
+            {
+                let _ = socket_path;
+                return Err(std::io::Error::new(
+                    ErrorKind::Unsupported,
+                    "unix domain socket transport is only supported on unix hosts",
+                ));
             }
         }
     };
@@ -563,7 +593,7 @@ pub async fn run_main_with_transport(
                             }
                             OutboundControlEvent::DisconnectAll => {
                                 info!(
-                                    "disconnecting {} outbound websocket connection(s) for graceful restart",
+                                    "disconnecting {} outbound connection(s) for graceful restart",
                                     outbound_connections.len()
                                 );
                                 for connection_state in outbound_connections.values() {
@@ -607,6 +637,9 @@ pub async fn run_main_with_transport(
         let mut connections = HashMap::<ConnectionId, ConnectionState>::new();
         let websocket_accept_shutdown = match &transport_runtime {
             TransportRuntime::WebSocket { shutdown_token, .. } => Some(shutdown_token.clone()),
+            TransportRuntime::UnixDomainSocket { shutdown_token, .. } => {
+                Some(shutdown_token.clone())
+            }
             TransportRuntime::Stdio => None,
         };
         async move {
@@ -713,7 +746,7 @@ pub async fn run_main_with_transport(
                                             .process_request(
                                                 connection_id,
                                                 request,
-                                                transport,
+                                                transport.clone(),
                                                 &mut connection_state.session,
                                             )
                                             .await;
@@ -813,13 +846,19 @@ pub async fn run_main_with_transport(
     let _ = processor_handle.await;
     let _ = outbound_handle.await;
 
-    if let TransportRuntime::WebSocket {
-        accept_handle,
-        shutdown_token,
-    } = transport_runtime
-    {
-        shutdown_token.cancel();
-        let _ = accept_handle.await;
+    match transport_runtime {
+        TransportRuntime::Stdio => {}
+        TransportRuntime::WebSocket {
+            accept_handle,
+            shutdown_token,
+        }
+        | TransportRuntime::UnixDomainSocket {
+            accept_handle,
+            shutdown_token,
+        } => {
+            shutdown_token.cancel();
+            let _ = accept_handle.await;
+        }
     }
 
     for handle in stdio_handles {

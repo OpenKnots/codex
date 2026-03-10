@@ -1641,4 +1641,29 @@ mod tests {
             Some("item/commandExecution/requestApproval.skillMetadata")
         );
     }
+
+    #[test]
+    fn command_execution_request_approval_available_decisions_is_not_marked_experimental() {
+        let params = v2::CommandExecutionRequestApprovalParams {
+            thread_id: "thr_123".to_string(),
+            turn_id: "turn_123".to_string(),
+            item_id: "call_123".to_string(),
+            approval_id: None,
+            reason: None,
+            network_approval_context: None,
+            command: Some("cat file".to_string()),
+            cwd: None,
+            command_actions: None,
+            additional_permissions: None,
+            skill_metadata: None,
+            proposed_execpolicy_amendment: None,
+            proposed_network_policy_amendments: None,
+            available_decisions: Some(vec![
+                v2::CommandExecutionApprovalDecision::Accept,
+                v2::CommandExecutionApprovalDecision::Decline,
+            ]),
+        };
+        let reason = crate::experimental_api::ExperimentalApi::experimental_reason(&params);
+        assert_eq!(reason, None);
+    }
 }

@@ -57,6 +57,7 @@ tempfile = { workspace = true }
 time = { workspace = true }
 toml = { workspace = true }
 tokio = { workspace = true, features = [
+    "net",
     "io-std",
     "macros",
     "process",

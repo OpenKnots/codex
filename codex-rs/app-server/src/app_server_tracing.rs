@@ -124,6 +124,7 @@ fn transport_name(transport: AppServerTransport) -> &'static str {
     match transport {
         AppServerTransport::Stdio => "stdio",
         AppServerTransport::WebSocket { .. } => "websocket",
+        AppServerTransport::UnixDomainSocket { .. } => "unix_domain_socket",
     }
 }
 

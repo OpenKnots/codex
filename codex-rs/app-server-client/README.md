@@ -1,30 +1,35 @@
 # codex-app-server-client
 
-Shared in-process app-server client used by conversational CLI surfaces:
+Shared app-server client used by conversational CLI surfaces:
 
 - `codex-exec`
 - `codex-tui`
 
 ## Purpose
 
-This crate centralizes startup and lifecycle management for an in-process
-`codex-app-server` runtime, so CLI clients do not need to duplicate:
+This crate centralizes startup and lifecycle management for app-server
+connections, so CLI clients do not need to duplicate:
 
 - app-server bootstrap and initialize handshake
-- in-memory request/event transport wiring
+- request/event transport wiring
 - lifecycle orchestration around caller-provided startup identity
 - graceful shutdown behavior
 
 ## Startup identity
 
-Callers pass both the app-server `SessionSource` and the initialize
-`client_info.name` explicitly when starting the facade.
+In-process callers pass both the app-server `SessionSource` and the
+initialize `client_info.name` explicitly when starting the facade.
 
 That keeps thread metadata (for example in `thread/list` and `thread/read`)
 aligned with the originating runtime without baking TUI/exec-specific policy
 into the shared client layer.
 
 ## Transport model
+
+The crate currently supports two transport modes:
+
+- in-process runtime embedding
+- unix domain socket attachment to a background `codex app-server`
 
 The in-process path uses typed channels:
 
@@ -34,18 +39,20 @@ The in-process path uses typed channels:
   - `ServerNotification`
   - `LegacyNotification`
 
-JSON serialization is still used at external transport boundaries
-(stdio/websocket), but the in-process hot path is typed.
+The unix domain socket path speaks line-delimited JSON-RPC and performs
+the standard `initialize` handshake against the remote host runtime
+before surfacing the same typed request and event facade to callers.
 
 Typed requests still receive app-server responses through the JSON-RPC
-result envelope internally. That is intentional: the in-process path is
-meant to preserve app-server semantics while removing the process
-boundary, not to introduce a second response contract.
+result envelope in both modes. That is intentional: the client facade is
+meant to preserve app-server semantics across transports, not introduce a
+second response contract.
 
 ## Bootstrap behavior
 
-The client facade starts an already-initialized in-process runtime, but
-thread bootstrap still follows normal app-server flow:
+The client facade either starts an in-process runtime or attaches to an
+already-running app-server over UDS, but thread bootstrap still follows
+normal app-server flow:
 
 - caller sends `thread/start` or `thread/resume`
 - app-server returns the immediate typed response

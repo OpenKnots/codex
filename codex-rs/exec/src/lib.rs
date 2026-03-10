@@ -17,6 +17,10 @@ use codex_app_server_client::DEFAULT_IN_PROCESS_CHANNEL_CAPACITY;
 use codex_app_server_client::InProcessAppServerClient;
 use codex_app_server_client::InProcessClientStartArgs;
 use codex_app_server_client::InProcessServerEvent;
+#[cfg(unix)]
+use codex_app_server_client::UnixDomainSocketAppServerClient;
+#[cfg(unix)]
+use codex_app_server_client::UnixDomainSocketClientStartArgs;
 use codex_app_server_protocol::ChatgptAuthTokensRefreshResponse;
 use codex_app_server_protocol::ClientRequest;
 use codex_app_server_protocol::ConfigWarningNotification;
@@ -57,6 +61,7 @@ use codex_core::config_loader::ConfigLoadError;
 use codex_core::config_loader::LoaderOverrides;
 use codex_core::config_loader::format_config_error_with_source;
 use codex_core::format_exec_policy_error_with_source;
+use codex_core::features::Feature;
 use codex_core::git_info::get_git_repo_root;
 use codex_feedback::CodexFeedback;
 use codex_otel::set_parent_from_context;
@@ -130,7 +135,134 @@ impl RequestIdSequencer {
     }
 }
 
+const REMOTE_RUNTIME_DIRECTORY: &str = "remote";
+const REMOTE_RUNTIME_SOCKET_FILENAME: &str = "app-server.sock";
+
+enum ExecAppServerClient {
+    InProcess(InProcessAppServerClient),
+    #[cfg(unix)]
+    UnixDomainSocket(UnixDomainSocketAppServerClient),
+}
+
+impl ExecAppServerClient {
+    async fn request_typed<T>(&self, request: ClientRequest) -> Result<T, codex_app_server_client::TypedRequestError>
+    where
+        T: serde::de::DeserializeOwned,
+    {
+        match self {
+            Self::InProcess(client) => client.request_typed(request).await,
+            #[cfg(unix)]
+            Self::UnixDomainSocket(client) => client.request_typed(request).await,
+        }
+    }
+
+    async fn resolve_server_request(
+        &self,
+        request_id: RequestId,
+        result: serde_json::Value,
+    ) -> std::io::Result<()> {
+        match self {
+            Self::InProcess(client) => client.resolve_server_request(request_id, result).await,
+            #[cfg(unix)]
+            Self::UnixDomainSocket(client) => client.resolve_server_request(request_id, result).await,
+        }
+    }
+
+    async fn reject_server_request(
+        &self,
+        request_id: RequestId,
+        error: JSONRPCErrorError,
+    ) -> std::io::Result<()> {
+        match self {
+            Self::InProcess(client) => client.reject_server_request(request_id, error).await,
+            #[cfg(unix)]
+            Self::UnixDomainSocket(client) => client.reject_server_request(request_id, error).await,
+        }
+    }
+
+    async fn next_event(&mut self) -> Option<InProcessServerEvent> {
+        match self {
+            Self::InProcess(client) => client.next_event().await,
+            #[cfg(unix)]
+            Self::UnixDomainSocket(client) => client.next_event().await,
+        }
+    }
+
+    async fn shutdown(self) -> std::io::Result<()> {
+        match self {
+            Self::InProcess(client) => client.shutdown().await,
+            #[cfg(unix)]
+            Self::UnixDomainSocket(client) => client.shutdown().await,
+        }
+    }
+}
+
+#[cfg(unix)]
+fn remote_runtime_socket_path(codex_home: &std::path::Path) -> PathBuf {
+    codex_home
+        .join(REMOTE_RUNTIME_DIRECTORY)
+        .join(REMOTE_RUNTIME_SOCKET_FILENAME)
+}
+
+#[cfg(unix)]
+fn ensure_remote_runtime_socket_exists(socket_path: &std::path::Path) -> anyhow::Result<()> {
+    if socket_path.exists() {
+        return Ok(());
+    }
+
+    Err(anyhow::anyhow!(
+        "remote control is enabled, but the host runtime socket is missing at {}. Run `codex remote start` or disable `[features].remote_control`.",
+        socket_path.display()
+    ))
+}
+
+async fn start_exec_app_server_client(
+    codex_home: &std::path::Path,
+    config: &Config,
+    in_process_start_args: InProcessClientStartArgs,
+) -> anyhow::Result<ExecAppServerClient> {
+    if config.features.enabled(Feature::RemoteControl) {
+        #[cfg(unix)]
+        {
+            let socket_path = remote_runtime_socket_path(codex_home);
+            ensure_remote_runtime_socket_exists(&socket_path)?;
+            let client = UnixDomainSocketAppServerClient::start(UnixDomainSocketClientStartArgs {
+                socket_path,
+                client_name: in_process_start_args.client_name.clone(),
+                client_version: in_process_start_args.client_version.clone(),
+                experimental_api: in_process_start_args.experimental_api,
+                opt_out_notification_methods: in_process_start_args
+                    .opt_out_notification_methods
+                    .clone(),
+                channel_capacity: in_process_start_args.channel_capacity,
+            })
+            .await
+            .map_err(|err| {
+                anyhow::anyhow!(
+                    "failed to connect to the remote-control host runtime. Run `codex remote status` for details: {err}"
+                )
+            })?;
+            return Ok(ExecAppServerClient::UnixDomainSocket(client));
+        }
+
+        #[cfg(not(unix))]
+        {
+            let _ = codex_home;
+            let _ = in_process_start_args;
+            return Err(anyhow::anyhow!(
+                "remote control is only supported on unix hosts in this release"
+            ));
+        }
+    }
+
+    let client = InProcessAppServerClient::start(in_process_start_args)
+        .await
+        .map_err(|err| anyhow::anyhow!("failed to initialize in-process app-server client: {err}"))?;
+    Ok(ExecAppServerClient::InProcess(client))
+}
+
 struct ExecRunArgs {
+    codex_home: PathBuf,
     in_process_start_args: InProcessClientStartArgs,
     command: Option<ExecCommand>,
     config: Config,
@@ -444,6 +576,7 @@ pub async fn run_main(cli: Cli, arg0_paths: Arg0DispatchPaths) -> anyhow::Result
         channel_capacity: DEFAULT_IN_PROCESS_CHANNEL_CAPACITY,
     };
     run_exec_session(ExecRunArgs {
+        codex_home,
         in_process_start_args,
         command,
         config,
@@ -466,6 +599,7 @@ pub async fn run_main(cli: Cli, arg0_paths: Arg0DispatchPaths) -> anyhow::Result
 
 async fn run_exec_session(args: ExecRunArgs) -> anyhow::Result<()> {
     let ExecRunArgs {
+        codex_home,
         in_process_start_args,
         command,
         config,
@@ -533,11 +667,8 @@ async fn run_exec_session(args: ExecRunArgs) -> anyhow::Result<()> {
     }
 
     let mut request_ids = RequestIdSequencer::new();
-    let mut client = InProcessAppServerClient::start(in_process_start_args)
-        .await
-        .map_err(|err| {
-            anyhow::anyhow!("failed to initialize in-process app-server client: {err}")
-        })?;
+    let mut client = start_exec_app_server_client(&codex_home, &config, in_process_start_args)
+        .await?;
 
     // Handle resume subcommand by resolving a rollout path and using explicit resume API.
     let (primary_thread_id, fallback_session_configured) =
@@ -933,7 +1064,7 @@ fn thread_resume_params_from_config(config: &Config, path: Option<PathBuf>) -> T
 }
 
 async fn send_request_with_response<T>(
-    client: &InProcessAppServerClient,
+    client: &ExecAppServerClient,
     request: ClientRequest,
     method: &str,
 ) -> Result<T, String>
@@ -1045,7 +1176,7 @@ fn normalize_legacy_notification_method(method: &str) -> &str {
 }
 
 fn lagged_event_warning_message(skipped: usize) -> String {
-    format!("in-process app-server event stream lagged; dropped {skipped} events")
+    format!("app-server event stream lagged; dropped {skipped} events")
 }
 
 struct DecodedLegacyNotification {
@@ -1108,7 +1239,7 @@ fn canceled_mcp_server_elicitation_response() -> Result<Value, String> {
 }
 
 async fn request_shutdown(
-    client: &InProcessAppServerClient,
+    client: &ExecAppServerClient,
     request_ids: &mut RequestIdSequencer,
     thread_id: &str,
 ) -> Result<(), String> {
@@ -1124,7 +1255,7 @@ async fn request_shutdown(
 }
 
 async fn resolve_server_request(
-    client: &InProcessAppServerClient,
+    client: &ExecAppServerClient,
     request_id: RequestId,
     value: serde_json::Value,
     method: &str,
@@ -1136,7 +1267,7 @@ async fn resolve_server_request(
 }
 
 async fn reject_server_request(
-    client: &InProcessAppServerClient,
+    client: &ExecAppServerClient,
     request_id: RequestId,
     method: &str,
     reason: String,
@@ -1167,7 +1298,7 @@ fn server_request_method_name(request: &ServerRequest) -> String {
 }
 
 async fn handle_server_request(
-    client: &InProcessAppServerClient,
+    client: &ExecAppServerClient,
     request: ServerRequest,
     config: &Config,
     _thread_id: &str,
@@ -1764,7 +1895,7 @@ mod tests {
     fn lagged_event_warning_message_is_explicit() {
         assert_eq!(
             lagged_event_warning_message(7),
-            "in-process app-server event stream lagged; dropped 7 events".to_string()
+            "app-server event stream lagged; dropped 7 events".to_string()
         );
     }
 
@@ -1805,6 +1936,27 @@ mod tests {
                 content: None,
                 meta: None,
             }
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn remote_runtime_socket_path_uses_codex_home_remote_directory() {
+        let path = remote_runtime_socket_path(std::path::Path::new("/tmp/codex-home"));
+        assert_eq!(path, PathBuf::from("/tmp/codex-home/remote/app-server.sock"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn missing_remote_runtime_socket_mentions_codex_remote_start() {
+        let err = ensure_remote_runtime_socket_exists(std::path::Path::new(
+            "/tmp/codex-home/remote/app-server.sock",
+        ))
+        .expect_err("missing socket should return an error");
+
+        assert!(
+            err.to_string().contains("codex remote start"),
+            "error should mention how to start the host runtime"
         );
     }
 }

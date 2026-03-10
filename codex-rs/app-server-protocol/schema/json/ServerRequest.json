@@ -361,6 +361,16 @@
             "null"
           ]
         },
+        "availableDecisions": {
+          "description": "Ordered list of decisions the client may present for this prompt.",
+          "items": {
+            "$ref": "#/definitions/CommandExecutionApprovalDecision"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        },
         "command": {
           "description": "The command to be executed.",
           "type": [

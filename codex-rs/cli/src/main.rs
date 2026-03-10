@@ -39,10 +39,12 @@ mod app_cmd;
 #[cfg(target_os = "macos")]
 mod desktop_app;
 mod mcp_cmd;
+mod remote_cmd;
 #[cfg(not(windows))]
 mod wsl_paths;
 
 use crate::mcp_cmd::McpCli;
+use crate::remote_cmd::RemoteCli;
 
 use codex_core::config::Config;
 use codex_core::config::ConfigOverrides;
@@ -104,6 +106,9 @@ enum Subcommand {
 
     /// [experimental] Run the app server or related tooling.
     AppServer(AppServerCommand),
+
+    /// [experimental] Manage the local remote-control host runtime.
+    Remote(RemoteCli),
 
     /// Launch the Codex desktop app (downloads the macOS installer if missing).
     #[cfg(target_os = "macos")]
@@ -632,6 +637,10 @@ async fn cli_main(arg0_paths: Arg0DispatchPaths) -> anyhow::Result<()> {
                 )?;
             }
         },
+        Some(Subcommand::Remote(remote_cli)) => {
+            remote_cmd::run_remote_command(remote_cli, arg0_paths.clone(), root_config_overrides)
+                .await?;
+        }
         #[cfg(target_os = "macos")]
         Some(Subcommand::App(app_cli)) => {
             app_cmd::run_app(app_cli).await?;
@@ -1468,10 +1477,61 @@ mod tests {
     }
 
     #[test]
+    fn app_server_listen_unix_domain_socket_url_parses() {
+        let app_server = app_server_from_args(
+            [
+                "codex",
+                "app-server",
+                "--listen",
+                "uds:///tmp/codex-app-server.sock",
+            ]
+            .as_ref(),
+        );
+        assert_eq!(
+            app_server.listen,
+            codex_app_server::AppServerTransport::UnixDomainSocket {
+                socket_path: PathBuf::from("/tmp/codex-app-server.sock"),
+            }
+        );
+    }
+
+    #[test]
     fn app_server_listen_invalid_url_fails_to_parse() {
         let parse_result =
             MultitoolCli::try_parse_from(["codex", "app-server", "--listen", "http://foo"]);
         assert!(parse_result.is_err());
+    }
+
+    #[test]
+    fn remote_pair_subcommand_parses() {
+        let cli =
+            MultitoolCli::try_parse_from(["codex", "remote", "pair"]).expect("parse should work");
+        let Some(Subcommand::Remote(remote_cli)) = cli.subcommand else {
+            panic!("expected remote subcommand");
+        };
+        assert!(matches!(
+            remote_cli.subcommand,
+            remote_cmd::RemoteSubcommand::Pair
+        ));
+    }
+
+    #[test]
+    fn remote_devices_revoke_subcommand_parses() {
+        let cli = MultitoolCli::try_parse_from(["codex", "remote", "devices", "revoke", "dev_123"])
+            .expect("parse should work");
+        let Some(Subcommand::Remote(remote_cli)) = cli.subcommand else {
+            panic!("expected remote subcommand");
+        };
+        let remote_cmd::RemoteSubcommand::Devices(remote_cmd::RemoteDevicesCommand {
+            subcommand:
+                remote_cmd::RemoteDevicesSubcommand::Revoke(remote_cmd::RemoteDevicesRevokeCommand {
+                    device_id,
+                }),
+        }) = remote_cli.subcommand
+        else {
+            panic!("expected remote devices revoke");
+        };
+        assert_eq!(device_id, "dev_123");
     }
 
     #[test]

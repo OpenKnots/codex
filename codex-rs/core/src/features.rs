@@ -178,6 +178,8 @@ pub enum Feature {
     ResponsesWebsockets,
     /// Enable Responses API websocket v2 mode.
     ResponsesWebsocketsV2,
+    /// Route exec through the local remote-control daemon when available.
+    RemoteControl,
 }
 
 impl Feature {
@@ -824,6 +826,12 @@ pub const FEATURES: &[FeatureSpec] = &[
     FeatureSpec {
         id: Feature::ResponsesWebsocketsV2,
         key: "responses_websockets_v2",
+        stage: Stage::UnderDevelopment,
+        default_enabled: false,
+    },
+    FeatureSpec {
+        id: Feature::RemoteControl,
+        key: "remote_control",
         stage: Stage::UnderDevelopment,
         default_enabled: false,
     },
