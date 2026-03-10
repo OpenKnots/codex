@@ -1375,6 +1375,7 @@ async fn turn_start_updates_sandbox_and_cwd_between_turns_v2() -> Result<()> {
             }],
             cwd: Some(first_cwd.clone()),
             approval_policy: Some(codex_app_server_protocol::AskForApproval::Never),
+            approval_review_policy: None,
             sandbox_policy: Some(codex_app_server_protocol::SandboxPolicy::WorkspaceWrite {
                 writable_roots: vec![first_cwd.try_into()?],
                 read_only_access: codex_app_server_protocol::ReadOnlyAccess::FullAccess,
@@ -1413,6 +1414,7 @@ async fn turn_start_updates_sandbox_and_cwd_between_turns_v2() -> Result<()> {
             }],
             cwd: Some(second_cwd.clone()),
             approval_policy: Some(codex_app_server_protocol::AskForApproval::Never),
+            approval_review_policy: None,
             sandbox_policy: Some(codex_app_server_protocol::SandboxPolicy::DangerFullAccess),
             model: Some("mock-model".to_string()),
             effort: Some(ReasoningEffort::Medium),

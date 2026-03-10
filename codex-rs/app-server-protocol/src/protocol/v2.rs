@@ -13,6 +13,7 @@ use codex_protocol::approvals::NetworkApprovalContext as CoreNetworkApprovalCont
 use codex_protocol::approvals::NetworkApprovalProtocol as CoreNetworkApprovalProtocol;
 use codex_protocol::approvals::NetworkPolicyAmendment as CoreNetworkPolicyAmendment;
 use codex_protocol::approvals::NetworkPolicyRuleAction as CoreNetworkPolicyRuleAction;
+use codex_protocol::config_types::ApprovalReviewPolicy as CoreApprovalReviewPolicy;
 use codex_protocol::config_types::CollaborationMode;
 use codex_protocol::config_types::CollaborationModeMask as CoreCollaborationModeMask;
 use codex_protocol::config_types::ForcedLoginMethod;
@@ -248,6 +249,12 @@ impl From<CoreAskForApproval> for AskForApproval {
         }
     }
 }
+
+v2_enum_from_core!(
+    pub enum ApprovalReviewPolicy from CoreApprovalReviewPolicy {
+        ManualOnly, AutoOnly
+    }
+);
 
 #[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, JsonSchema, TS)]
 #[serde(rename_all = "kebab-case")]
@@ -511,6 +518,8 @@ pub struct ProfileV2 {
     pub model: Option<String>,
     pub model_provider: Option<String>,
     pub approval_policy: Option<AskForApproval>,
+    /// Optional approval review mode override for this profile.
+    pub approval_review_policy: Option<ApprovalReviewPolicy>,
     pub service_tier: Option<ServiceTier>,
     pub model_reasoning_effort: Option<ReasoningEffort>,
     pub model_reasoning_summary: Option<ReasoningSummary>,
@@ -609,6 +618,8 @@ pub struct Config {
     pub model_auto_compact_token_limit: Option<i64>,
     pub model_provider: Option<String>,
     pub approval_policy: Option<AskForApproval>,
+    /// Optional default approval review mode.
+    pub approval_review_policy: Option<ApprovalReviewPolicy>,
     pub sandbox_mode: Option<SandboxMode>,
     pub sandbox_workspace_write: Option<SandboxWorkspaceWrite>,
     pub forced_chatgpt_workspace_id: Option<String>,
@@ -2233,6 +2244,10 @@ pub struct ThreadStartParams {
     pub cwd: Option<String>,
     #[ts(optional = nullable)]
     pub approval_policy: Option<AskForApproval>,
+    /// Override whether approvals stay manual or are automatically reviewed
+    /// for this thread and subsequent turns.
+    #[ts(optional = nullable)]
+    pub approval_review_policy: Option<ApprovalReviewPolicy>,
     #[ts(optional = nullable)]
     pub sandbox: Option<SandboxMode>,
     #[ts(optional = nullable)]
@@ -2294,6 +2309,8 @@ pub struct ThreadStartResponse {
     pub service_tier: Option<ServiceTier>,
     pub cwd: PathBuf,
     pub approval_policy: AskForApproval,
+    /// Whether approvals remain manual or are automatically reviewed.
+    pub approval_review_policy: ApprovalReviewPolicy,
     pub sandbox: SandboxPolicy,
     pub reasoning_effort: Option<ReasoningEffort>,
 }
@@ -2345,6 +2362,10 @@ pub struct ThreadResumeParams {
     pub cwd: Option<String>,
     #[ts(optional = nullable)]
     pub approval_policy: Option<AskForApproval>,
+    /// Override whether approvals stay manual or are automatically reviewed
+    /// for this thread and subsequent turns.
+    #[ts(optional = nullable)]
+    pub approval_review_policy: Option<ApprovalReviewPolicy>,
     #[ts(optional = nullable)]
     pub sandbox: Option<SandboxMode>,
     #[ts(optional = nullable)]
@@ -2372,6 +2393,8 @@ pub struct ThreadResumeResponse {
     pub service_tier: Option<ServiceTier>,
     pub cwd: PathBuf,
     pub approval_policy: AskForApproval,
+    /// Whether approvals remain manual or are automatically reviewed.
+    pub approval_review_policy: ApprovalReviewPolicy,
     pub sandbox: SandboxPolicy,
     pub reasoning_effort: Option<ReasoningEffort>,
 }
@@ -2414,6 +2437,10 @@ pub struct ThreadForkParams {
     pub cwd: Option<String>,
     #[ts(optional = nullable)]
     pub approval_policy: Option<AskForApproval>,
+    /// Override whether approvals stay manual or are automatically reviewed
+    /// for this thread and subsequent turns.
+    #[ts(optional = nullable)]
+    pub approval_review_policy: Option<ApprovalReviewPolicy>,
     #[ts(optional = nullable)]
     pub sandbox: Option<SandboxMode>,
     #[ts(optional = nullable)]
@@ -2439,6 +2466,8 @@ pub struct ThreadForkResponse {
     pub service_tier: Option<ServiceTier>,
     pub cwd: PathBuf,
     pub approval_policy: AskForApproval,
+    /// Whether approvals remain manual or are automatically reviewed.
+    pub approval_review_policy: ApprovalReviewPolicy,
     pub sandbox: SandboxPolicy,
     pub reasoning_effort: Option<ReasoningEffort>,
 }
@@ -3449,6 +3478,10 @@ pub struct TurnStartParams {
     /// Override the approval policy for this turn and subsequent turns.
     #[ts(optional = nullable)]
     pub approval_policy: Option<AskForApproval>,
+    /// Override whether approvals stay manual or are automatically reviewed
+    /// for this turn and subsequent turns.
+    #[ts(optional = nullable)]
+    pub approval_review_policy: Option<ApprovalReviewPolicy>,
     /// Override the sandbox policy for this turn and subsequent turns.
     #[ts(optional = nullable)]
     pub sandbox_policy: Option<SandboxPolicy>,
@@ -6637,6 +6670,7 @@ mod tests {
             input: vec![],
             cwd: None,
             approval_policy: None,
+            approval_review_policy: None,
             sandbox_policy: None,
             model: None,
             service_tier: None,

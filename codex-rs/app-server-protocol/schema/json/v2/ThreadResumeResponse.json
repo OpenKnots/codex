@@ -5,6 +5,13 @@
       "description": "A path that is guaranteed to be absolute and normalized (though it is not guaranteed to be canonicalized or exist on the filesystem).\n\nIMPORTANT: When deserializing an `AbsolutePathBuf`, a base path must be set using [AbsolutePathBufGuard::new]. If no base path is set, the deserialization will fail unless the path being deserialized is already absolute.",
       "type": "string"
     },
+    "ApprovalReviewPolicy": {
+      "enum": [
+        "manualOnly",
+        "autoOnly"
+      ],
+      "type": "string"
+    },
     "AskForApproval": {
       "oneOf": [
         {
@@ -2001,6 +2008,14 @@
     "approvalPolicy": {
       "$ref": "#/definitions/AskForApproval"
     },
+    "approvalReviewPolicy": {
+      "allOf": [
+        {
+          "$ref": "#/definitions/ApprovalReviewPolicy"
+        }
+      ],
+      "description": "Whether approvals remain manual or are automatically reviewed."
+    },
     "cwd": {
       "type": "string"
     },
@@ -2039,6 +2054,7 @@
   },
   "required": [
     "approvalPolicy",
+    "approvalReviewPolicy",
     "cwd",
     "model",
     "modelProvider",
