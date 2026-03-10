@@ -33,7 +33,6 @@ use serde::Deserialize;
 use serde::Serialize;
 use serde_json::Value;
 use tokio_util::sync::CancellationToken;
-use uuid::Uuid;
 
 use crate::codex::Session;
 use crate::codex::TurnContext;
@@ -125,6 +124,7 @@ pub(crate) struct GuardianAssessment {
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) enum GuardianApprovalRequest {
     Shell {
+        id: String,
         command: Vec<String>,
         cwd: PathBuf,
         sandbox_permissions: crate::sandboxing::SandboxPermissions,
@@ -132,6 +132,7 @@ pub(crate) enum GuardianApprovalRequest {
         justification: Option<String>,
     },
     ExecCommand {
+        id: String,
         command: Vec<String>,
         cwd: PathBuf,
         sandbox_permissions: crate::sandboxing::SandboxPermissions,
@@ -141,6 +142,7 @@ pub(crate) enum GuardianApprovalRequest {
     },
     #[cfg(unix)]
     Execve {
+        id: String,
         tool_name: String,
         program: String,
         argv: Vec<String>,
@@ -148,18 +150,23 @@ pub(crate) enum GuardianApprovalRequest {
         additional_permissions: Option<PermissionProfile>,
     },
     ApplyPatch {
+        id: String,
         cwd: PathBuf,
         files: Vec<AbsolutePathBuf>,
+        changes: HashMap<PathBuf, codex_protocol::protocol::FileChange>,
         change_count: usize,
         patch: String,
     },
     NetworkAccess {
+        id: String,
+        turn_id: String,
         target: String,
         host: String,
         protocol: NetworkApprovalProtocol,
         port: u16,
     },
     McpToolCall {
+        id: String,
         server: String,
         tool_name: String,
         arguments: Option<Value>,
@@ -229,7 +236,8 @@ async fn run_guardian_review(
     request: GuardianApprovalRequest,
     retry_reason: Option<String>,
 ) -> ReviewDecision {
-    let assessment_id = Uuid::new_v4().to_string();
+    let assessment_id = guardian_request_id(&request).to_string();
+    let action_summary = guardian_assessment_action_value(&request);
     session
         .notify_background_event(turn.as_ref(), "Reviewing approval request...".to_string())
         .await;
@@ -243,12 +251,12 @@ async fn run_guardian_review(
                 risk_score: None,
                 risk_level: None,
                 rationale: None,
-                action: None,
+                action: Some(action_summary.clone()),
             }),
         )
         .await;
 
-    let denied_action = guardian_assessment_action_value(&request);
+    let denied_action = action_summary;
     let prompt_items = build_guardian_prompt_items(session.as_ref(), retry_reason, request).await;
     let schema = guardian_output_schema();
     let cancel_token = CancellationToken::new();
@@ -774,6 +782,7 @@ fn truncate_guardian_action_value(value: Value) -> Value {
 fn guardian_action_value(action: &GuardianApprovalRequest) -> Value {
     match action {
         GuardianApprovalRequest::Shell {
+            id: _,
             command,
             cwd,
             sandbox_permissions,
@@ -799,6 +808,7 @@ fn guardian_action_value(action: &GuardianApprovalRequest) -> Value {
             action
         }
         GuardianApprovalRequest::ExecCommand {
+            id: _,
             command,
             cwd,
             sandbox_permissions,
@@ -827,6 +837,7 @@ fn guardian_action_value(action: &GuardianApprovalRequest) -> Value {
         }
         #[cfg(unix)]
         GuardianApprovalRequest::Execve {
+            id: _,
             tool_name,
             program,
             argv,
@@ -848,8 +859,10 @@ fn guardian_action_value(action: &GuardianApprovalRequest) -> Value {
             action
         }
         GuardianApprovalRequest::ApplyPatch {
+            id: _,
             cwd,
             files,
+            changes: _,
             change_count,
             patch,
         } => serde_json::json!({
@@ -860,6 +873,8 @@ fn guardian_action_value(action: &GuardianApprovalRequest) -> Value {
             "patch": patch,
         }),
         GuardianApprovalRequest::NetworkAccess {
+            id: _,
+            turn_id: _,
             target,
             host,
             protocol,
@@ -872,6 +887,7 @@ fn guardian_action_value(action: &GuardianApprovalRequest) -> Value {
             "port": port,
         }),
         GuardianApprovalRequest::McpToolCall {
+            id: _,
             server,
             tool_name,
             arguments,
@@ -916,35 +932,70 @@ fn guardian_action_value(action: &GuardianApprovalRequest) -> Value {
 
 fn guardian_assessment_action_value(action: &GuardianApprovalRequest) -> Value {
     match action {
-        GuardianApprovalRequest::Shell { command, .. } => serde_json::json!({
+        GuardianApprovalRequest::Shell { command, cwd, .. } => serde_json::json!({
             "tool": "shell",
-            "command": command,
+            "command": codex_shell_command::parse_command::shlex_join(command),
+            "cwd": cwd,
         }),
-        GuardianApprovalRequest::ExecCommand { command, .. } => serde_json::json!({
+        GuardianApprovalRequest::ExecCommand { command, cwd, .. } => serde_json::json!({
             "tool": "exec_command",
-            "command": command,
+            "command": codex_shell_command::parse_command::shlex_join(command),
+            "cwd": cwd,
         }),
         #[cfg(unix)]
         GuardianApprovalRequest::Execve {
             tool_name,
             program,
             argv,
+            cwd,
             ..
         } => serde_json::json!({
             "tool": tool_name,
             "program": program,
             "argv": argv,
+            "cwd": cwd,
         }),
         GuardianApprovalRequest::ApplyPatch {
+            cwd,
             files,
+            changes,
             change_count,
             ..
         } => serde_json::json!({
             "tool": "apply_patch",
+            "cwd": cwd,
             "files": files,
+            "changes": changes
+                .iter()
+                .map(|(path, change)| match change {
+                    codex_protocol::protocol::FileChange::Add { content } => serde_json::json!({
+                        "path": path,
+                        "kind": "add",
+                        "diff": content,
+                    }),
+                    codex_protocol::protocol::FileChange::Delete { content } => {
+                        serde_json::json!({
+                            "path": path,
+                            "kind": "delete",
+                            "diff": content,
+                        })
+                    }
+                    codex_protocol::protocol::FileChange::Update {
+                        unified_diff,
+                        move_path,
+                    } => serde_json::json!({
+                        "path": path,
+                        "kind": "update",
+                        "diff": unified_diff,
+                        "move_path": move_path,
+                    }),
+                })
+                .collect::<Vec<_>>(),
             "change_count": change_count,
         }),
         GuardianApprovalRequest::NetworkAccess {
+            id: _,
+            turn_id: _,
             target,
             host,
             protocol,
@@ -957,12 +1008,28 @@ fn guardian_assessment_action_value(action: &GuardianApprovalRequest) -> Value {
             "port": port,
         }),
         GuardianApprovalRequest::McpToolCall {
-            server, tool_name, ..
+            server,
+            tool_name,
+            arguments,
+            ..
         } => serde_json::json!({
             "tool": "mcp_tool_call",
             "server": server,
             "tool_name": tool_name,
+            "arguments": arguments,
         }),
+    }
+}
+
+fn guardian_request_id(request: &GuardianApprovalRequest) -> &str {
+    match request {
+        GuardianApprovalRequest::Shell { id, .. }
+        | GuardianApprovalRequest::ExecCommand { id, .. }
+        | GuardianApprovalRequest::ApplyPatch { id, .. }
+        | GuardianApprovalRequest::NetworkAccess { id, .. }
+        | GuardianApprovalRequest::McpToolCall { id, .. } => id,
+        #[cfg(unix)]
+        GuardianApprovalRequest::Execve { id, .. } => id,
     }
 }
 
