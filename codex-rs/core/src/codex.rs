@@ -5316,13 +5316,10 @@ pub(crate) async fn run_turn(
     // new user message are recorded. Estimate pending incoming items (context
     // diffs/full reinjection + user input) and trigger compaction preemptively
     // when they would push the thread over the compaction threshold.
-    let mut inline_compaction_trigger = match run_pre_sampling_compact(&sess, &turn_context).await {
-        Ok(trigger) => trigger,
-        Err(err) => {
-            error!("Failed to run pre-sampling compact: {err}");
-            return None;
-        }
-    };
+    if let Err(err) = run_pre_sampling_compact(&sess, &turn_context).await {
+        error!("Failed to run pre-sampling compact: {err}");
+        return None;
+    }
 
     let skills_outcome = Some(turn_context.turn_skills.outcome.as_ref());
 
@@ -5566,18 +5563,17 @@ pub(crate) async fn run_turn(
         .await
         {
             Ok(sampling_request_output) => {
-                if let Some(trigger) = inline_compaction_trigger.take() {
+                if inline_server_side_compaction_threshold(&sess, &turn_context).is_some() {
                     let result = if sampling_request_output.observed_server_side_compaction {
                         "applied"
                     } else {
                         "skipped"
                     };
-                    let extra_tags = if sampling_request_output.observed_server_side_compaction {
-                        Vec::new()
-                    } else {
-                        vec![("reason", "threshold_not_reached")]
-                    };
-                    record_compaction_metric(&sess, "server_side", trigger, result, &extra_tags);
+                    sess.services.session_telemetry.counter(
+                        "codex.inline_compaction",
+                        1,
+                        &[("result", result)],
+                    );
                 }
                 let SamplingRequestResult {
                     needs_follow_up,
@@ -5603,31 +5599,15 @@ pub(crate) async fn run_turn(
                 // as long as compaction works well in getting us way below the token limit, we shouldn't worry about being in an infinite loop.
                 if token_limit_reached && needs_follow_up {
                     if inline_server_side_compaction_threshold(&sess, &turn_context).is_some() {
-                        record_compaction_metric(
-                            &sess,
-                            "server_side",
-                            AutoCompactTrigger::AutoFollowUp,
-                            "requested",
-                            &[],
-                        );
-                        inline_compaction_trigger = Some(AutoCompactTrigger::AutoFollowUp);
-                    } else {
-                        record_inline_compaction_skip(
-                            &sess,
-                            &turn_context,
-                            AutoCompactTrigger::AutoFollowUp,
-                        );
-                        if run_auto_compact(
-                            &sess,
-                            &turn_context,
-                            InitialContextInjection::BeforeLastUserMessage,
-                            AutoCompactTrigger::AutoFollowUp,
-                        )
-                        .await
-                        .is_err()
-                        {
-                            return None;
-                        }
+                    } else if run_auto_compact(
+                        &sess,
+                        &turn_context,
+                        InitialContextInjection::BeforeLastUserMessage,
+                    )
+                    .await
+                    .is_err()
+                    {
+                        return None;
                     }
                     continue;
                 }
@@ -5729,23 +5709,6 @@ pub(crate) async fn run_turn(
     last_agent_message
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum AutoCompactTrigger {
-    AutoPreTurn,
-    AutoFollowUp,
-    PreviousModelPreflight,
-}
-
-impl AutoCompactTrigger {
-    fn as_str(self) -> &'static str {
-        match self {
-            AutoCompactTrigger::AutoPreTurn => "auto_preturn",
-            AutoCompactTrigger::AutoFollowUp => "auto_followup",
-            AutoCompactTrigger::PreviousModelPreflight => "previous_model_preflight",
-        }
-    }
-}
-
 fn build_server_side_compaction_replacement_history(
     compaction_item: ResponseItem,
     history_at_compaction: &[ResponseItem],
@@ -5758,24 +5721,6 @@ fn build_server_side_compaction_replacement_history(
             .cloned(),
     );
     replacement_history
-}
-
-fn record_compaction_metric(
-    sess: &Session,
-    mode: &'static str,
-    trigger: AutoCompactTrigger,
-    result: &'static str,
-    extra_tags: &[(&'static str, &str)],
-) {
-    let mut tags = vec![
-        ("mode", mode),
-        ("trigger", trigger.as_str()),
-        ("result", result),
-    ];
-    tags.extend_from_slice(extra_tags);
-    sess.services
-        .session_telemetry
-        .counter("codex.compaction", 1, &tags);
 }
 
 fn inline_server_side_compaction_threshold(
@@ -5794,37 +5739,10 @@ fn inline_server_side_compaction_threshold(
     turn_context.model_info.auto_compact_token_limit()
 }
 
-fn record_inline_compaction_skip(
-    sess: &Session,
-    turn_context: &TurnContext,
-    trigger: AutoCompactTrigger,
-) {
-    let reason = if !sess.enabled(Feature::ServerSideCompaction) {
-        "flag_off"
-    } else if !should_use_remote_compact_task(&turn_context.provider) {
-        "non_openai"
-    } else {
-        "not_eligible"
-    };
-    debug!(
-        turn_id = %turn_context.sub_id,
-        trigger = trigger.as_str(),
-        reason,
-        "skipping inline server-side compaction"
-    );
-    record_compaction_metric(
-        sess,
-        "server_side",
-        trigger,
-        "skipped",
-        &[("reason", reason)],
-    );
-}
-
 async fn run_pre_sampling_compact(
     sess: &Arc<Session>,
     turn_context: &Arc<TurnContext>,
-) -> CodexResult<Option<AutoCompactTrigger>> {
+) -> CodexResult<()> {
     let total_usage_tokens_before_compaction = sess.get_total_token_usage().await;
     if maybe_run_previous_model_inline_compact(
         sess,
@@ -5833,7 +5751,7 @@ async fn run_pre_sampling_compact(
     )
     .await?
     {
-        return Ok(None);
+        return Ok(());
     }
     let total_usage_tokens = sess.get_total_token_usage().await;
     let auto_compact_limit = turn_context
@@ -5841,27 +5759,12 @@ async fn run_pre_sampling_compact(
         .auto_compact_token_limit()
         .unwrap_or(i64::MAX);
     // Compact if the total usage tokens are greater than or equal to the auto-compact limit.
-    if total_usage_tokens >= auto_compact_limit {
-        if inline_server_side_compaction_threshold(sess, turn_context).is_some() {
-            record_compaction_metric(
-                sess,
-                "server_side",
-                AutoCompactTrigger::AutoPreTurn,
-                "requested",
-                &[],
-            );
-            return Ok(Some(AutoCompactTrigger::AutoPreTurn));
-        }
-        record_inline_compaction_skip(sess, turn_context, AutoCompactTrigger::AutoPreTurn);
-        run_auto_compact(
-            sess,
-            turn_context,
-            InitialContextInjection::DoNotInject,
-            AutoCompactTrigger::AutoPreTurn,
-        )
-        .await?;
+    if total_usage_tokens >= auto_compact_limit
+        && inline_server_side_compaction_threshold(sess, turn_context).is_none()
+    {
+        run_auto_compact(sess, turn_context, InitialContextInjection::DoNotInject).await?;
     }
-    Ok(None)
+    Ok(())
 }
 
 /// Runs pre-sampling compaction against the previous model when switching to a smaller
@@ -5898,18 +5801,10 @@ async fn maybe_run_previous_model_inline_compact(
         && previous_model_turn_context.model_info.slug != turn_context.model_info.slug
         && old_context_window > new_context_window;
     if should_run {
-        record_compaction_metric(
-            sess,
-            "client_side",
-            AutoCompactTrigger::PreviousModelPreflight,
-            "requested",
-            &[],
-        );
         run_auto_compact(
             sess,
             &previous_model_turn_context,
             InitialContextInjection::DoNotInject,
-            AutoCompactTrigger::PreviousModelPreflight,
         )
         .await?;
         return Ok(true);
@@ -5921,7 +5816,6 @@ async fn run_auto_compact(
     sess: &Arc<Session>,
     turn_context: &Arc<TurnContext>,
     initial_context_injection: InitialContextInjection,
-    trigger: AutoCompactTrigger,
 ) -> CodexResult<()> {
     if should_use_remote_compact_task(&turn_context.provider) {
         run_inline_remote_auto_compact_task(
@@ -5938,7 +5832,6 @@ async fn run_auto_compact(
         )
         .await?;
     }
-    record_compaction_metric(sess, "client_side", trigger, "applied", &[]);
     Ok(())
 }
 
