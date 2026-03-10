@@ -23,6 +23,7 @@ use insta::Settings;
 use insta::assert_snapshot;
 use pretty_assertions::assert_eq;
 use std::collections::BTreeMap;
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
@@ -160,8 +161,10 @@ fn guardian_truncate_text_keeps_prefix_suffix_and_xml_marker() {
 fn format_guardian_action_pretty_truncates_large_string_fields() {
     let patch = "line\n".repeat(10_000);
     let action = GuardianApprovalRequest::ApplyPatch {
+        id: "patch-1".to_string(),
         cwd: PathBuf::from("/tmp"),
         files: Vec::new(),
+        changes: HashMap::new(),
         change_count: 1usize,
         patch: patch.clone(),
     };
@@ -175,8 +178,10 @@ fn format_guardian_action_pretty_truncates_large_string_fields() {
 #[test]
 fn guardian_assessment_action_value_redacts_apply_patch_patch_text() {
     let action = GuardianApprovalRequest::ApplyPatch {
+        id: "patch-1".to_string(),
         cwd: PathBuf::from("/tmp"),
         files: vec![AbsolutePathBuf::try_from("/tmp/guardian.txt").expect("absolute path")],
+        changes: HashMap::new(),
         change_count: 1usize,
         patch: "*** Begin Patch\n*** Update File: guardian.txt\n@@\n+secret\n*** End Patch"
             .to_string(),
@@ -344,6 +349,7 @@ async fn guardian_review_request_layout_matches_model_visible_request_snapshot()
         session.as_ref(),
         Some("Sandbox denied outbound git push to github.com.".to_string()),
         GuardianApprovalRequest::Shell {
+            id: "shell-1".to_string(),
             command: vec![
                 "git".to_string(),
                 "push".to_string(),

@@ -1522,6 +1522,7 @@ mod tests {
         };
 
         let request = build_guardian_mcp_tool_review_request(
+            "call-1",
             &invocation,
             Some(&approval_metadata(
                 Some("playwright"),
@@ -1535,6 +1536,7 @@ mod tests {
         assert_eq!(
             request,
             GuardianApprovalRequest::McpToolCall {
+                id: "call-1".to_string(),
                 server: CODEX_APPS_MCP_SERVER_NAME.to_string(),
                 tool_name: "browser_navigate".to_string(),
                 arguments: Some(serde_json::json!({
@@ -1566,11 +1568,13 @@ mod tests {
             tool_description: None,
         };
 
-        let request = build_guardian_mcp_tool_review_request(&invocation, Some(&metadata));
+        let request =
+            build_guardian_mcp_tool_review_request("call-2", &invocation, Some(&metadata));
 
         assert_eq!(
             request,
             GuardianApprovalRequest::McpToolCall {
+                id: "call-2".to_string(),
                 server: "custom_server".to_string(),
                 tool_name: "dangerous_tool".to_string(),
                 arguments: None,
