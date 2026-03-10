@@ -5829,6 +5829,7 @@ impl ChatWidget {
             tx.send(AppEvent::CodexOp(Op::OverrideTurnContext {
                 cwd: None,
                 approval_policy: None,
+                approval_review_policy: None,
                 sandbox_policy: None,
                 windows_sandbox_level: None,
                 model: Some(switch_model_for_events.clone()),
@@ -5950,6 +5951,7 @@ impl ChatWidget {
                     tx.send(AppEvent::CodexOp(Op::OverrideTurnContext {
                         cwd: None,
                         approval_policy: None,
+                        approval_review_policy: None,
                         sandbox_policy: None,
                         model: None,
                         effort: None,
@@ -6932,6 +6934,7 @@ impl ChatWidget {
             tx.send(AppEvent::CodexOp(Op::OverrideTurnContext {
                 cwd: None,
                 approval_policy: Some(approval),
+                approval_review_policy: Some(approval_review_policy),
                 sandbox_policy: Some(sandbox_clone.clone()),
                 windows_sandbox_level: None,
                 model: None,
@@ -7642,6 +7645,7 @@ impl ChatWidget {
             .send(AppEvent::CodexOp(Op::OverrideTurnContext {
                 cwd: None,
                 approval_policy: None,
+                approval_review_policy: None,
                 sandbox_policy: None,
                 windows_sandbox_level: None,
                 model: None,

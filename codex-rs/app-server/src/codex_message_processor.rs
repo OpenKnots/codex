@@ -5628,6 +5628,7 @@ impl CodexMessageProcessor {
                 .submit(Op::OverrideTurnContext {
                     cwd: params.cwd,
                     approval_policy: params.approval_policy.map(AskForApproval::to_core),
+                    approval_review_policy: None,
                     sandbox_policy: params.sandbox_policy.map(|p| p.to_core()),
                     windows_sandbox_level: None,
                     model: params.model,

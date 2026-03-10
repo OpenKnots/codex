@@ -75,6 +75,7 @@ use codex_protocol::approvals::ExecApprovalRequestSkillMetadata;
 use codex_protocol::approvals::ExecPolicyAmendment;
 use codex_protocol::approvals::NetworkPolicyAmendment;
 use codex_protocol::approvals::NetworkPolicyRuleAction;
+use codex_protocol::config_types::ApprovalReviewPolicy;
 use codex_protocol::config_types::ModeKind;
 use codex_protocol::config_types::Settings;
 use codex_protocol::config_types::WebSearchMode;
@@ -512,6 +513,7 @@ impl Codex {
             base_instructions,
             compact_prompt: config.compact_prompt.clone(),
             approval_policy: config.permissions.approval_policy.clone(),
+            approval_review_policy: config.approval_review_policy,
             sandbox_policy: config.permissions.sandbox_policy.clone(),
             file_system_sandbox_policy: config.permissions.file_system_sandbox_policy.clone(),
             network_sandbox_policy: config.permissions.network_sandbox_policy,
@@ -908,6 +910,7 @@ pub(crate) struct SessionConfiguration {
 
     /// When to escalate for approval for execution
     approval_policy: Constrained<AskForApproval>,
+    approval_review_policy: ApprovalReviewPolicy,
     /// How to sandbox commands executed in the system
     sandbox_policy: Constrained<SandboxPolicy>,
     file_system_sandbox_policy: FileSystemSandboxPolicy,
@@ -981,6 +984,9 @@ impl SessionConfiguration {
         if let Some(approval_policy) = updates.approval_policy {
             next_configuration.approval_policy.set(approval_policy)?;
         }
+        if let Some(approval_review_policy) = updates.approval_review_policy {
+            next_configuration.approval_review_policy = approval_review_policy;
+        }
         let mut sandbox_policy_changed = false;
         if let Some(sandbox_policy) = updates.sandbox_policy.clone() {
             next_configuration.sandbox_policy.set(sandbox_policy)?;
@@ -1016,6 +1022,7 @@ impl SessionConfiguration {
 pub(crate) struct SessionSettingsUpdate {
     pub(crate) cwd: Option<PathBuf>,
     pub(crate) approval_policy: Option<AskForApproval>,
+    pub(crate) approval_review_policy: Option<ApprovalReviewPolicy>,
     pub(crate) sandbox_policy: Option<SandboxPolicy>,
     pub(crate) windows_sandbox_level: Option<WindowsSandboxLevel>,
     pub(crate) collaboration_mode: Option<CollaborationMode>,
@@ -1092,6 +1099,7 @@ impl Session {
         per_turn_config.model_reasoning_summary = session_configuration.model_reasoning_summary;
         per_turn_config.service_tier = session_configuration.service_tier;
         per_turn_config.personality = session_configuration.personality;
+        per_turn_config.approval_review_policy = session_configuration.approval_review_policy;
         let resolved_web_search_mode = resolve_web_search_mode_for_turn(
             &per_turn_config.web_search_mode,
             session_configuration.sandbox_policy.get(),
@@ -4044,6 +4052,7 @@ async fn submission_loop(sess: Arc<Session>, config: Arc<Config>, rx_sub: Receiv
                 Op::OverrideTurnContext {
                     cwd,
                     approval_policy,
+                    approval_review_policy,
                     sandbox_policy,
                     windows_sandbox_level,
                     model,
@@ -4069,6 +4078,7 @@ async fn submission_loop(sess: Arc<Session>, config: Arc<Config>, rx_sub: Receiv
                         SessionSettingsUpdate {
                             cwd,
                             approval_policy,
+                            approval_review_policy,
                             sandbox_policy,
                             windows_sandbox_level,
                             collaboration_mode: Some(collaboration_mode),
@@ -4360,6 +4370,7 @@ mod handlers {
                     SessionSettingsUpdate {
                         cwd: Some(cwd),
                         approval_policy: Some(approval_policy),
+                        approval_review_policy: None,
                         sandbox_policy: Some(sandbox_policy),
                         windows_sandbox_level: None,
                         collaboration_mode,
