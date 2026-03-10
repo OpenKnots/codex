@@ -1394,6 +1394,28 @@ fn feature_table_overrides_legacy_flags() -> std::io::Result<()> {
 }
 
 #[test]
+fn feature_table_enables_agent_function_call_inbox() -> std::io::Result<()> {
+    let codex_home = TempDir::new()?;
+    let mut entries = BTreeMap::new();
+    entries.insert("agent_function_call_inbox".to_string(), true);
+    let cfg = ConfigToml {
+        features: Some(crate::features::FeaturesToml { entries }),
+        ..Default::default()
+    };
+
+    let config = Config::load_from_base_config_with_overrides(
+        cfg,
+        ConfigOverrides::default(),
+        codex_home.path().to_path_buf(),
+    )?;
+
+    assert!(config.features.enabled(Feature::AgentFunctionCallInbox));
+    assert!(config.agent_use_function_call_inbox);
+
+    Ok(())
+}
+
+#[test]
 fn legacy_toggles_map_to_features() -> std::io::Result<()> {
     let codex_home = TempDir::new()?;
     let cfg = ConfigToml {
@@ -2603,7 +2625,6 @@ fn load_config_rejects_missing_agent_role_config_file() -> std::io::Result<()> {
             max_threads: None,
             max_depth: None,
             job_max_runtime_seconds: None,
-            use_function_call_inbox: false,
             roles: BTreeMap::from([(
                 "researcher".to_string(),
                 AgentRoleToml {
@@ -2683,7 +2704,6 @@ fn load_config_normalizes_agent_role_nickname_candidates() -> std::io::Result<()
             max_threads: None,
             max_depth: None,
             job_max_runtime_seconds: None,
-            use_function_call_inbox: false,
             roles: BTreeMap::from([(
                 "researcher".to_string(),
                 AgentRoleToml {
@@ -2725,7 +2745,6 @@ fn load_config_rejects_empty_agent_role_nickname_candidates() -> std::io::Result
             max_threads: None,
             max_depth: None,
             job_max_runtime_seconds: None,
-            use_function_call_inbox: false,
             roles: BTreeMap::from([(
                 "researcher".to_string(),
                 AgentRoleToml {
@@ -2761,7 +2780,6 @@ fn load_config_rejects_duplicate_agent_role_nickname_candidates() -> std::io::Re
             max_threads: None,
             max_depth: None,
             job_max_runtime_seconds: None,
-            use_function_call_inbox: false,
             roles: BTreeMap::from([(
                 "researcher".to_string(),
                 AgentRoleToml {
@@ -2797,7 +2815,6 @@ fn load_config_rejects_unsafe_agent_role_nickname_candidates() -> std::io::Resul
             max_threads: None,
             max_depth: None,
             job_max_runtime_seconds: None,
-            use_function_call_inbox: false,
             roles: BTreeMap::from([(
                 "researcher".to_string(),
                 AgentRoleToml {

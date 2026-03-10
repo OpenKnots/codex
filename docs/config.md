@@ -33,8 +33,8 @@ user input. If you want those handoffs to appear as explicit non-user transcript
 opt into a synthetic function-call/function-call-output envelope:
 
 ```toml
-[agents]
-use_function_call_inbox = true
+[features]
+agent_function_call_inbox = true
 ```
 
 When enabled, Codex injects inbound agent messages into non-subagent threads as an `agent_inbox`

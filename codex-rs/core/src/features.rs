@@ -132,6 +132,8 @@ pub enum Feature {
     EnableRequestCompression,
     /// Enable collab tools.
     Collab,
+    /// Deliver inbound agent messages via a synthetic function-call inbox envelope.
+    AgentFunctionCallInbox,
     /// Enable apps.
     Apps,
     /// Enable plugins.
@@ -655,6 +657,12 @@ pub const FEATURES: &[FeatureSpec] = &[
         default_enabled: false,
     },
     FeatureSpec {
+        id: Feature::AgentFunctionCallInbox,
+        key: "agent_function_call_inbox",
+        stage: Stage::UnderDevelopment,
+        default_enabled: false,
+    },
+    FeatureSpec {
         id: Feature::Apps,
         key: "apps",
         stage: Stage::Experimental {
@@ -956,5 +964,18 @@ mod tests {
     fn collab_is_legacy_alias_for_multi_agent() {
         assert_eq!(feature_for_key("multi_agent"), Some(Feature::Collab));
         assert_eq!(feature_for_key("collab"), Some(Feature::Collab));
+    }
+
+    #[test]
+    fn agent_function_call_inbox_is_under_development() {
+        assert_eq!(
+            Feature::AgentFunctionCallInbox.stage(),
+            Stage::UnderDevelopment
+        );
+        assert_eq!(Feature::AgentFunctionCallInbox.default_enabled(), false);
+        assert_eq!(
+            feature_for_key("agent_function_call_inbox"),
+            Some(Feature::AgentFunctionCallInbox)
+        );
     }
 }
