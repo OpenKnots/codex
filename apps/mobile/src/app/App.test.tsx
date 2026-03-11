@@ -30,6 +30,9 @@ describe("Codex remote mobile shell", () => {
       await screen.findByRole("heading", { name: /sign in to codex remote/i }),
     ).toBeVisible();
     expect(
+      screen.getByRole("img", { name: /codex elephant logo/i }),
+    ).toBeVisible();
+    expect(
       screen.getByRole("button", { name: /continue with openai/i }),
     ).toBeVisible();
     expect(screen.getByText(/scan a host pairing code/i)).toBeVisible();
@@ -39,6 +42,10 @@ describe("Codex remote mobile shell", () => {
     const user = userEvent.setup();
 
     render(<App gateway={createMockGateway()} initialEntries={["/hosts"]} />);
+
+    expect(
+      await screen.findByRole("img", { name: /codex elephant logo/i }),
+    ).toBeVisible();
 
     await user.click(
       await screen.findByRole("link", { name: /studio macbook/i }),

@@ -44,6 +44,7 @@ import {
   toThreadStoreKey,
   useLiveThreadStore,
 } from "../thread/liveThreadStore";
+import codexElephantLogo from "../assets/codex-elephant-logo.png";
 
 export function AppRoutes() {
   return (
@@ -90,6 +91,11 @@ function HomeRoute() {
   return (
     <div className="screen auth-screen">
       <div className="auth-hero">
+        <img
+          alt="Codex elephant logo"
+          className="brand-logo brand-logo-hero"
+          src={codexElephantLogo}
+        />
         <p className="eyebrow">Foreground remote control</p>
         <h1>Sign in to Codex Remote</h1>
         <p className="lede">
@@ -162,9 +168,16 @@ function ShellLayout() {
   return (
     <div className="app-shell">
       <header className="shell-header">
-        <div>
-          <p className="eyebrow">Codex Remote</p>
-          <h1>{sessionQuery.data.workspaceLabel}</h1>
+        <div className="shell-brand">
+          <img
+            alt="Codex elephant logo"
+            className="brand-logo brand-logo-shell"
+            src={codexElephantLogo}
+          />
+          <div>
+            <p className="eyebrow">Codex Remote</p>
+            <h1>{sessionQuery.data.workspaceLabel}</h1>
+          </div>
         </div>
         <div className="account-chip">{sessionQuery.data.accountLabel}</div>
       </header>
