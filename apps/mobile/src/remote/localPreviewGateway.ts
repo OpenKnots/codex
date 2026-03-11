@@ -16,6 +16,7 @@ import type {
   DeviceGroup,
   GatewayInspection,
   NativeCapabilities,
+  RemoteBootstrap,
   RelayConnectorSnapshot,
   RemoteGateway,
   RemoteSession,
@@ -250,6 +251,9 @@ function createLocalPreviewThreadGateway(
           void maybeStopNativeThreadEvents();
         }
       };
+    },
+    subscribeToBootstrap(_listener: (bootstrap: RemoteBootstrap) => void) {
+      return () => {};
     },
     inspect() {
       return {

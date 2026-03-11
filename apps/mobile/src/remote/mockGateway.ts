@@ -13,6 +13,7 @@ import type {
   NativeCapabilities,
   PairedDevice,
   RemoteApproval,
+  RemoteBootstrap,
   RemoteGateway,
   RemoteSession,
   RemoteThreadRecord,
@@ -41,7 +42,18 @@ export function createMockGateway(
     string,
     Set<(record: RemoteThreadRecord) => void>
   >();
+  const bootstrapListeners = new Set<
+    (bootstrap: RemoteBootstrap) => void
+  >();
   const state = createState(options);
+
+  function currentBootstrap(): RemoteBootstrap {
+    return {
+      deviceGroups: clone(state.deviceGroups),
+      hosts: clone(state.hosts),
+      session: clone(state.session),
+    };
+  }
 
   function getRecord(hostId: string, threadId: string): RemoteThreadRecord {
     const hostRecords = state.threadRecords[hostId];
@@ -59,12 +71,20 @@ export function createMockGateway(
     }
   }
 
+  function emitBootstrap() {
+    const bootstrap = currentBootstrap();
+    for (const listener of bootstrapListeners) {
+      listener(bootstrap);
+    }
+  }
+
   return {
     async getSession() {
       return clone(state.session);
     },
     async signIn() {
       state.session.signedIn = true;
+      emitBootstrap();
     },
     async listHosts() {
       return state.session.signedIn ? clone(state.hosts) : [];
@@ -168,6 +188,7 @@ export function createMockGateway(
       const device = group?.devices.find((entry) => entry.id === deviceId);
       if (device) {
         device.trust = "revoked";
+        emitBootstrap();
       }
     },
     subscribeToThread(hostId: string, threadId: string, listener) {
@@ -185,6 +206,13 @@ export function createMockGateway(
         if (current.size === 0) {
           listeners.delete(key);
         }
+      };
+    },
+    subscribeToBootstrap(listener) {
+      bootstrapListeners.add(listener);
+      listener(currentBootstrap());
+      return () => {
+        bootstrapListeners.delete(listener);
       };
     },
     inspect() {

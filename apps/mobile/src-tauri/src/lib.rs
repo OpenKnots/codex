@@ -414,12 +414,19 @@ impl LocalPreviewAppServerClient {
         self.write_message(&message, "write notification")
     }
 
-    fn send_response<T: Serialize>(&mut self, request_id: RequestId, result: T) -> Result<(), String> {
-        self.write_message(&JSONRPCResponse {
-            id: request_id,
-            result: serde_json::to_value(result)
-                .map_err(|err| format!("failed to encode response: {err}"))?,
-        }, "write response")
+    fn send_response<T: Serialize>(
+        &mut self,
+        request_id: RequestId,
+        result: T,
+    ) -> Result<(), String> {
+        self.write_message(
+            &JSONRPCResponse {
+                id: request_id,
+                result: serde_json::to_value(result)
+                    .map_err(|err| format!("failed to encode response: {err}"))?,
+            },
+            "write response",
+        )
     }
 
     fn send_error(
@@ -1085,7 +1092,8 @@ fn run_remote_thread_stream(
                 };
                 if let ServerNotification::ServerRequestResolved(params) = &server_notification {
                     if params.thread_id == thread_id {
-                        pending_approvals.retain(|approval| approval.request_id() != &params.request_id);
+                        pending_approvals
+                            .retain(|approval| approval.request_id() != &params.request_id);
                     } else {
                         continue;
                     }
@@ -1197,9 +1205,7 @@ fn resolve_pending_approval(
                 }
             };
             let scope = match resolution.decision {
-                RemoteApprovalDecision::Accept => {
-                    resolution.scope.unwrap_or(default_scope)
-                }
+                RemoteApprovalDecision::Accept => resolution.scope.unwrap_or(default_scope),
                 RemoteApprovalDecision::AcceptForSession => PermissionGrantScope::Session,
                 RemoteApprovalDecision::Decline | RemoteApprovalDecision::Cancel => {
                     PermissionGrantScope::Turn

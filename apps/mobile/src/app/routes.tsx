@@ -18,7 +18,12 @@ import {
   useParams,
 } from "react-router-dom";
 import { selectAttachmentImport } from "../native/bridge";
-import type { Thread, ThreadItem, UserInput } from "../remote/protocol";
+import type {
+  AdditionalPermissionProfile,
+  Thread,
+  ThreadItem,
+  UserInput,
+} from "../remote/protocol";
 import {
   gatewayQueryKeys,
   useDeviceGroupsQuery,
@@ -798,6 +803,136 @@ function TimelineCard({ item }: { item: ThreadItem }) {
         </article>
       );
   }
+}
+
+function threadRuntimeLabel(phase: RemoteThreadRecord["runtime"]["phase"]) {
+  switch (phase) {
+    case "running":
+      return "Turn running";
+    case "waitingOnApproval":
+      return "Waiting on approval";
+    case "completed":
+      return "Ready for input";
+  }
+}
+
+function approvalKindLabel(approval: RemoteApproval): string {
+  switch (approval.type) {
+    case "command":
+      return "Command approval";
+    case "fileChange":
+      return "File change approval";
+    case "permissions":
+      return "Permission approval";
+  }
+}
+
+function approvalTitle(approval: RemoteApproval): string {
+  switch (approval.type) {
+    case "command":
+      return approval.params.command ?? "Shell command pending approval";
+    case "fileChange":
+      return approval.params.grantRoot
+        ? "Allow file edits under a session root"
+        : "Allow file edits on the host";
+    case "permissions":
+      return "Grant additional host permissions";
+  }
+}
+
+function approvalCode(approval: RemoteApproval): string {
+  switch (approval.type) {
+    case "command":
+      return approval.params.command ?? "Unknown command";
+    case "fileChange":
+      return approval.params.grantRoot ?? "File edits requested by the host.";
+    case "permissions":
+      return permissionSummary(approval.params.permissions);
+  }
+}
+
+function approvalReason(approval: RemoteApproval): string {
+  switch (approval.type) {
+    case "command":
+      return approval.params.reason ?? "Shell approval requested.";
+    case "fileChange":
+      return approval.params.reason ?? "File changes are waiting for approval.";
+    case "permissions":
+      return approval.params.reason ?? "Additional host permissions requested.";
+  }
+}
+
+function approvalFacts(approval: RemoteApproval): string[] {
+  switch (approval.type) {
+    case "command": {
+      const facts = [];
+      if (approval.params.cwd) {
+        facts.push(`cwd ${approval.params.cwd}`);
+      }
+      const extraPermissions = permissionSummary(
+        approval.params.additionalPermissions,
+      );
+      if (extraPermissions !== "No additional permissions.") {
+        facts.push(extraPermissions);
+      }
+      return facts;
+    }
+    case "fileChange":
+      return approval.params.grantRoot
+        ? [`root ${approval.params.grantRoot}`]
+        : ["Host file edits"];
+    case "permissions":
+      return [permissionSummary(approval.params.permissions)];
+  }
+}
+
+function supportsSessionApproval(approval: RemoteApproval): boolean {
+  switch (approval.type) {
+    case "command":
+    case "fileChange":
+      return approval.decisions.includes("acceptForSession");
+    case "permissions":
+      return true;
+  }
+}
+
+function permissionSummary(
+  permissions: AdditionalPermissionProfile | null | undefined,
+): string {
+  if (!permissions) {
+    return "No additional permissions.";
+  }
+
+  const facts = [];
+  const reads = permissions.fileSystem?.read?.length ?? 0;
+  const writes = permissions.fileSystem?.write?.length ?? 0;
+  if (reads > 0) {
+    facts.push(`${reads} read root${reads === 1 ? "" : "s"}`);
+  }
+  if (writes > 0) {
+    facts.push(`${writes} write root${writes === 1 ? "" : "s"}`);
+  }
+  if (permissions.network) {
+    facts.push("network access");
+  }
+  if (permissions.macos) {
+    if (permissions.macos.preferences !== "none") {
+      facts.push("macOS preferences");
+    }
+    if (permissions.macos.automations !== "none") {
+      facts.push("macOS automations");
+    }
+    if (permissions.macos.accessibility) {
+      facts.push("Accessibility");
+    }
+    if (permissions.macos.calendar) {
+      facts.push("Calendar");
+    }
+  }
+
+  return facts.length > 0
+    ? facts.join(" • ")
+    : "Additional host permissions requested.";
 }
 
 function StatusPill({

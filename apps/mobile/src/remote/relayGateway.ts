@@ -1,6 +1,7 @@
 import type { RelayConnector } from "./relayConnector";
 import type {
   ApprovalResolution,
+  RemoteBootstrap,
   RemoteGateway,
   RemoteThreadRecord,
   SendTurnInput,
@@ -106,6 +107,9 @@ export function createRelayBackedGateway({
       return () => {
         unsubscribe?.();
       };
+    },
+    subscribeToBootstrap(listener: (bootstrap: RemoteBootstrap) => void) {
+      return connector.subscribe(listener);
     },
     inspect() {
       return threadGateway.inspect();

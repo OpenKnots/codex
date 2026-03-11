@@ -86,14 +86,23 @@ The current repository implementation reflects that split:
 - `apps/mobile/src-tauri/` contains the Tauri shell plus the native-command boundary for capability probing, attachment-import hooks, and local-preview thread commands.
 - `apps/mobile/README.md` documents local development commands for web preview, tests, and future iOS initialization.
 
+The mobile control-plane boundary is now split from the thread stream on purpose:
+
+- the relay connector owns session, host, pairing, and device bootstrap state
+- the thread gateway owns thread list/read, live thread streaming, prompt send, interrupt, and approval replay
+- the app shell subscribes to connector bootstrap updates and refreshes session/host/device query state without a full reload
+
 The mobile shell now has a local-preview mode for development on the host machine:
 
 - session, host, device, and pairing state come from `CODEX_HOME/remote/{host,devices,pairing}.json`
 - thread list and thread read use `thread/list` and `thread/read` over `CODEX_HOME/remote/app-server.sock`
 - composer sends `turn/start` for new turns and `turn/steer` when the thread has an in-progress turn
 - interrupt uses `turn/interrupt` against the active turn when one exists
+- opening a live thread starts one long-lived subscribed app-server connection that resumes the thread, streams thread/item status changes, captures approval server requests, and emits full thread-record snapshots into the Tauri webview
+- command, file-change, and permission approvals now replay over that same subscribed connection so app-server request IDs remain valid
+- the local-preview relay connector polls `read_remote_connector_snapshot` and keeps host/device/session bootstrap data live in the app shell, preserving optimistic client-side revocations until the host-side control plane exists
 
-That local-preview path deliberately stops short of full approval handling. Pending command/file/permission approvals require live server-request IDs from a persistent app-server or relay stream, so the current local-preview bridge reports real thread runtime state but does not replay approval requests yet.
+The current local-preview bridge is intentionally scoped to one active live-thread stream in the mobile shell. That keeps the native boundary small and stable while the first-party relay transport is still under development.
 
 For local end-to-end iteration today:
 

@@ -130,9 +130,20 @@ code {
 
 .status-banner {
   display: flex;
+  flex-direction: column;
   gap: 0.75rem;
-  align-items: center;
   padding: 0.9rem 1rem;
+}
+
+.status-banner.live {
+  background:
+    linear-gradient(
+      135deg,
+      rgba(255, 252, 247, 0.92),
+      rgba(244, 251, 247, 0.92)
+    ),
+    rgba(255, 252, 247, 0.72);
+  border-color: rgba(23, 122, 83, 0.18);
 }
 
 .primary-button,
@@ -275,10 +286,30 @@ h3 {
 .pairing-code-row,
 .timeline-header,
 .composer-mode-row,
-.capability-grid {
+.capability-grid,
+.status-banner-head,
+.status-banner-chips,
+.status-banner-meta,
+.approval-facts {
   display: flex;
   gap: 0.6rem;
   flex-wrap: wrap;
+}
+
+.status-banner-head {
+  justify-content: space-between;
+  align-items: start;
+}
+
+.status-banner-copy {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+}
+
+.status-banner-meta {
+  color: var(--muted);
+  font-size: 0.82rem;
 }
 
 .pairing-code-row {
@@ -350,6 +381,12 @@ h3 {
   min-height: 2.5rem;
 }
 
+.mode-chip.disabled,
+.mode-chip:disabled {
+  cursor: default;
+  opacity: 0.55;
+}
+
 .mode-chip.active {
   border-color: rgba(222, 102, 52, 0.24);
   background: rgba(222, 102, 52, 0.12);
@@ -418,6 +455,22 @@ h3 {
   padding: 0.95rem;
 }
 
+.approval-card-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 0.75rem;
+  align-items: start;
+}
+
+.approval-fact {
+  border-radius: 999px;
+  border: 1px solid rgba(171, 108, 18, 0.14);
+  background: rgba(255, 255, 255, 0.54);
+  color: var(--muted);
+  font-size: 0.76rem;
+  padding: 0.35rem 0.6rem;
+}
+
 .bottom-nav {
   position: fixed;
   left: 50%;
@@ -467,6 +520,8 @@ h3 {
   .host-card-top,
   .thread-list-head,
   .approval-head,
+  .approval-card-head,
+  .status-banner-head,
   .thread-hero,
   .device-row,
   .shell-header {

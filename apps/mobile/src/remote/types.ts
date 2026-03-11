@@ -121,6 +121,12 @@ export type RelayConnectorSnapshot = {
   deviceGroups: DeviceGroup[];
 };
 
+export type RemoteBootstrap = {
+  session: RemoteSession;
+  hosts: HostSummary[];
+  deviceGroups: DeviceGroup[];
+};
+
 export interface RemoteGateway {
   getSession(): Promise<RemoteSession>;
   signIn(): Promise<void>;
@@ -145,5 +151,6 @@ export interface RemoteGateway {
     threadId: string,
     listener: (record: RemoteThreadRecord) => void,
   ): () => void;
+  subscribeToBootstrap(listener: (bootstrap: RemoteBootstrap) => void): () => void;
   inspect(): GatewayInspection;
 }
