@@ -9,8 +9,16 @@ const bridge = vi.hoisted(() => ({
   readRemoteConnectorSnapshot: vi.fn(),
   sendRemotePrompt: vi.fn(),
 }));
+const config = vi.hoisted(() => ({
+  readRemoteAppConfig: vi.fn(),
+}));
+const relay = vi.hoisted(() => ({
+  createRelayWebSocketGateway: vi.fn(),
+}));
 
 vi.mock("../native/bridge", () => bridge);
+vi.mock("./config", () => config);
+vi.mock("./relayWebSocketGateway", () => relay);
 
 import { createAppGateway } from "./appGateway";
 
@@ -20,12 +28,15 @@ describe("createAppGateway", () => {
     bridge.readRemoteThreadRecord.mockReset();
     bridge.readNativeCapabilities.mockReset();
     bridge.readRemoteConnectorSnapshot.mockReset();
+    config.readRemoteAppConfig.mockReset();
+    relay.createRelayWebSocketGateway.mockReset();
     bridge.readNativeCapabilities.mockResolvedValue({
       fileImport: true,
       qrScanner: true,
       relaySockets: true,
       secureStore: true,
     });
+    config.readRemoteAppConfig.mockReturnValue({});
   });
 
   it("uses the local preview connector when native host state is available", async () => {
@@ -128,5 +139,41 @@ describe("createAppGateway", () => {
 
     expect(hosts[0]?.id).toBe("host-studio");
     expect((await gateway.getSession()).accountLabel).toBe("val@openai.com");
+  });
+
+  it("uses the relay websocket gateway when a relay url is configured", async () => {
+    bridge.readRemoteConnectorSnapshot.mockResolvedValue(null);
+    const relayGateway = {
+      getSession: vi.fn(),
+      getThread: vi.fn(),
+      inspect: vi.fn(),
+      interruptTurn: vi.fn(),
+      listDeviceGroups: vi.fn(),
+      listHosts: vi.fn(),
+      listThreads: vi.fn(),
+      resolveApproval: vi.fn(),
+      revokeDevice: vi.fn(),
+      sendPrompt: vi.fn(),
+      signIn: vi.fn(),
+      subscribeToBootstrap: vi.fn(() => () => {}),
+      subscribeToThread: vi.fn(() => () => {}),
+    };
+    config.readRemoteAppConfig.mockReturnValue({
+      relayUrl: "wss://relay.example.test/mobile",
+    });
+    relay.createRelayWebSocketGateway.mockReturnValue(relayGateway);
+
+    const gateway = await createAppGateway();
+
+    expect(relay.createRelayWebSocketGateway).toHaveBeenCalledWith({
+      nativeCapabilities: {
+        fileImport: true,
+        qrScanner: true,
+        relaySockets: true,
+        secureStore: true,
+      },
+      url: "wss://relay.example.test/mobile",
+    });
+    expect(gateway).toBe(relayGateway);
   });
 });

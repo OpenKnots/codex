@@ -85,6 +85,7 @@ The current repository implementation reflects that split:
 - `apps/mobile/src/` contains the React UI, query hooks, Zustand live-thread cache, and a relay-shaped gateway boundary that can swap between mock data and local-preview host data.
 - `apps/mobile/src-tauri/` contains the Tauri shell plus the native-command boundary for capability probing, attachment-import hooks, and local-preview thread commands.
 - `apps/mobile/README.md` documents local development commands for web preview, tests, and future iOS initialization.
+- `VITE_CODEX_RELAY_URL` now selects a typed WebSocket relay gateway in web preview builds when local preview host state is not available.
 
 The mobile control-plane boundary is now split from the thread stream on purpose:
 
@@ -104,6 +105,13 @@ The mobile shell now has a local-preview mode for development on the host machin
 - optimistic client-side revocations are still preserved over both transport paths until the host-side control plane exists
 
 The current local-preview bridge is intentionally scoped to one active live-thread stream in the mobile shell. That keeps the native boundary small and stable while the first-party relay transport is still under development.
+
+Alongside that local-preview path, the mobile app now has a typed relay socket boundary:
+
+- the WebSocket client uses request/response envelopes for `bootstrap/get`, `thread/read`, `thread/list`, `turn/prompt`, `turn/interrupt`, `approval/resolve`, and future relay control-plane methods
+- bootstrap and live-thread notifications reuse the same `RemoteGateway` contract as mock data and local preview, so the UI does not care which transport is active
+- the relay gateway injects device-native capabilities into bootstrap state so iPhone UX decisions still come from the client runtime rather than the relay
+- reconnecting socket state is surfaced immediately by the gateway as a temporary `Relay reconnecting` host status, then restored to the last stable bootstrap payload when the socket reconnects
 
 For local end-to-end iteration today:
 
