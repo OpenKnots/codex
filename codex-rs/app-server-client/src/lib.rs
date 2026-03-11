@@ -16,10 +16,10 @@
 //! so overload surfaces as channel-full errors rather than unbounded memory
 //! growth.
 
-use std::error::Error;
-use std::fmt;
 use std::collections::HashMap;
 use std::collections::VecDeque;
+use std::error::Error;
+use std::fmt;
 use std::io::Error as IoError;
 use std::io::ErrorKind;
 use std::io::Result as IoResult;
@@ -40,10 +40,10 @@ use codex_app_server_protocol::JSONRPCErrorError;
 use codex_app_server_protocol::JSONRPCMessage;
 use codex_app_server_protocol::JSONRPCNotification;
 use codex_app_server_protocol::JSONRPCRequest;
-use codex_app_server_protocol::ServerNotification;
-use codex_app_server_protocol::ServerRequest;
 use codex_app_server_protocol::RequestId;
 use codex_app_server_protocol::Result as JsonRpcResult;
+use codex_app_server_protocol::ServerNotification;
+use codex_app_server_protocol::ServerRequest;
 use codex_arg0::Arg0DispatchPaths;
 use codex_core::config::Config;
 use codex_core::config_loader::CloudRequirementsLoader;
@@ -305,10 +305,15 @@ impl ClientFacade {
                 response_tx,
             })
             .await
-            .map_err(|_| IoError::new(ErrorKind::BrokenPipe, "app-server worker channel is closed"))?;
-        response_rx
-            .await
-            .map_err(|_| IoError::new(ErrorKind::BrokenPipe, "app-server request channel is closed"))?
+            .map_err(|_| {
+                IoError::new(ErrorKind::BrokenPipe, "app-server worker channel is closed")
+            })?;
+        response_rx.await.map_err(|_| {
+            IoError::new(
+                ErrorKind::BrokenPipe,
+                "app-server request channel is closed",
+            )
+        })?
     }
 
     async fn request_typed<T>(&self, request: ClientRequest) -> Result<T, TypedRequestError>
@@ -339,10 +344,12 @@ impl ClientFacade {
                 response_tx,
             })
             .await
-            .map_err(|_| IoError::new(ErrorKind::BrokenPipe, "app-server worker channel is closed"))?;
-        response_rx
-            .await
-            .map_err(|_| IoError::new(ErrorKind::BrokenPipe, "app-server notify channel is closed"))?
+            .map_err(|_| {
+                IoError::new(ErrorKind::BrokenPipe, "app-server worker channel is closed")
+            })?;
+        response_rx.await.map_err(|_| {
+            IoError::new(ErrorKind::BrokenPipe, "app-server notify channel is closed")
+        })?
     }
 
     async fn resolve_server_request(
@@ -358,9 +365,14 @@ impl ClientFacade {
                 response_tx,
             })
             .await
-            .map_err(|_| IoError::new(ErrorKind::BrokenPipe, "app-server worker channel is closed"))?;
+            .map_err(|_| {
+                IoError::new(ErrorKind::BrokenPipe, "app-server worker channel is closed")
+            })?;
         response_rx.await.map_err(|_| {
-            IoError::new(ErrorKind::BrokenPipe, "app-server resolve channel is closed")
+            IoError::new(
+                ErrorKind::BrokenPipe,
+                "app-server resolve channel is closed",
+            )
         })?
     }
 
@@ -377,7 +389,9 @@ impl ClientFacade {
                 response_tx,
             })
             .await
-            .map_err(|_| IoError::new(ErrorKind::BrokenPipe, "app-server worker channel is closed"))?;
+            .map_err(|_| {
+                IoError::new(ErrorKind::BrokenPipe, "app-server worker channel is closed")
+            })?;
         response_rx.await.map_err(|_| {
             IoError::new(ErrorKind::BrokenPipe, "app-server reject channel is closed")
         })?
@@ -403,7 +417,10 @@ impl ClientFacade {
             && let Ok(command_result) = timeout(SHUTDOWN_TIMEOUT, response_rx).await
         {
             command_result.map_err(|_| {
-                IoError::new(ErrorKind::BrokenPipe, "app-server shutdown channel is closed")
+                IoError::new(
+                    ErrorKind::BrokenPipe,
+                    "app-server shutdown channel is closed",
+                )
             })??;
         }
 
@@ -954,21 +971,21 @@ fn client_notification_to_jsonrpc_notification(
 }
 
 #[cfg(unix)]
-async fn read_jsonrpc_message<R>(lines: &mut tokio::io::Lines<R>) -> IoResult<Option<JSONRPCMessage>>
+async fn read_jsonrpc_message<R>(
+    lines: &mut tokio::io::Lines<R>,
+) -> IoResult<Option<JSONRPCMessage>>
 where
     R: AsyncBufRead + Unpin,
 {
     let Some(line) = lines.next_line().await? else {
         return Ok(None);
     };
-    serde_json::from_str(&line)
-        .map(Some)
-        .map_err(|err| {
-            IoError::new(
-                ErrorKind::InvalidData,
-                format!("failed to decode JSON-RPC message: {err}"),
-            )
-        })
+    serde_json::from_str(&line).map(Some).map_err(|err| {
+        IoError::new(
+            ErrorKind::InvalidData,
+            format!("failed to decode JSON-RPC message: {err}"),
+        )
+    })
 }
 
 #[cfg(unix)]
@@ -1084,8 +1101,12 @@ where
             *skipped_events = skipped_events.saturating_add(1);
             warn!("dropping socket app-server event because consumer queue is full");
             if let InProcessServerEvent::ServerRequest(request) = event {
-                reject_socket_server_request(writer, request.id().clone(), SOCKET_QUEUE_FULL_MESSAGE)
-                    .await?;
+                reject_socket_server_request(
+                    writer,
+                    request.id().clone(),
+                    SOCKET_QUEUE_FULL_MESSAGE,
+                )
+                .await?;
             }
         }
         Err(mpsc::error::TrySendError::Closed(_)) => {
@@ -1112,14 +1133,20 @@ where
             if let Some(response_tx) = pending_requests.remove(&response.id) {
                 let _ = response_tx.send(Ok(Ok(response.result)));
             } else {
-                warn!("dropping unexpected socket app-server response for {:?}", response.id);
+                warn!(
+                    "dropping unexpected socket app-server response for {:?}",
+                    response.id
+                );
             }
         }
         JSONRPCMessage::Error(error) => {
             if let Some(response_tx) = pending_requests.remove(&error.id) {
                 let _ = response_tx.send(Ok(Err(error.error)));
             } else {
-                warn!("dropping unexpected socket app-server error for {:?}", error.id);
+                warn!(
+                    "dropping unexpected socket app-server error for {:?}",
+                    error.id
+                );
             }
         }
         JSONRPCMessage::Notification(notification) => {
@@ -1174,6 +1201,7 @@ mod tests {
     use super::*;
     #[cfg(unix)]
     use codex_app_server_protocol::CommandExecutionApprovalDecision;
+    use codex_app_server_protocol::ConfigRequirementsReadResponse;
     #[cfg(unix)]
     use codex_app_server_protocol::JSONRPCMessage;
     #[cfg(unix)]
@@ -1182,7 +1210,6 @@ mod tests {
     use codex_app_server_protocol::JSONRPCRequest;
     #[cfg(unix)]
     use codex_app_server_protocol::JSONRPCResponse;
-    use codex_app_server_protocol::ConfigRequirementsReadResponse;
     #[cfg(unix)]
     use codex_app_server_protocol::ServerNotification;
     use codex_app_server_protocol::SessionSource as ApiSessionSource;
@@ -1302,8 +1329,8 @@ mod tests {
     #[tokio::test]
     async fn unix_domain_socket_typed_request_roundtrip_works() {
         let socket_path = unique_socket_path("typed-request");
-        let listener = UnixListener::bind(&socket_path)
-            .expect("fake unix domain socket server should bind");
+        let listener =
+            UnixListener::bind(&socket_path).expect("fake unix domain socket server should bind");
         let server_task = tokio::spawn(async move {
             let (stream, _) = listener
                 .accept()

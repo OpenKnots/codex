@@ -13,6 +13,7 @@ Current repository work in this area focuses on the host foundation:
 - Integration coverage verifies independent connection state over the UDS transport.
 - `codex remote` manages a local background host runtime with `start`, `status`, `pair`, `devices list`, `devices revoke`, and `stop`.
 - `codex-app-server-client` can now attach to that host runtime over UDS, and `codex-exec` can opt into the shared daemon when `[features].remote_control = true`.
+- `apps/mobile` now contains the first Tauri 2 + React app shell, a relay-aligned gateway boundary, and focused UI tests for the five-screen mobile flow.
 
 ## Host Architecture
 
@@ -34,7 +35,13 @@ The current host-management commands own state under `CODEX_HOME/remote/`:
 - `devices.json` for paired-device state
 - `pairing.json` for active pairing sessions
 
-`codex remote pair` currently issues the deep-link payload and pairing code from the host side. Native QR scanning and device-side completion are part of the mobile app work, not the host runtime.
+The current host state is now versioned and typed rather than ad-hoc JSON:
+
+- `host.json` stores a persistent host ID, host name, platform, relay stub state, and a static X25519 host identity for future encrypted relay sessions.
+- `devices.json` stores paired-device records plus revocation timestamps and leaves room for per-device platform and public-key metadata.
+- `pairing.json` stores short-lived pairing sessions and prunes expired, used, or revoked sessions before issuing a new one.
+
+`codex remote status` now reports host identity, socket health, relay status, paired-device count, and the number of active pairing sessions. `codex remote pair` prints the deep link, session ID, pairing code, and expiry timestamp from the host side. Native QR scanning and device-side completion are still part of the mobile app work, not the host runtime.
 
 To route `codex-exec` through the shared host runtime, enable the under-development feature flag:
 
@@ -72,6 +79,28 @@ The recommended Tauri 2 app remains intentionally small:
 - settings and devices
 
 The web layer should own the event timeline, composer, and approval UI. Native plugins should be reserved for iOS-only capabilities such as Keychain storage, QR scanning, push notifications, and file or photo import.
+
+The current repository implementation reflects that split:
+
+- `apps/mobile/src/` contains the React UI, query hooks, Zustand live-thread cache, and a relay-shaped gateway boundary that can swap between mock data and local-preview host data.
+- `apps/mobile/src-tauri/` contains the Tauri shell plus the native-command boundary for capability probing, attachment-import hooks, and local-preview thread commands.
+- `apps/mobile/README.md` documents local development commands for web preview, tests, and future iOS initialization.
+
+The mobile shell now has a local-preview mode for development on the host machine:
+
+- session, host, device, and pairing state come from `CODEX_HOME/remote/{host,devices,pairing}.json`
+- thread list and thread read use `thread/list` and `thread/read` over `CODEX_HOME/remote/app-server.sock`
+- composer sends `turn/start` for new turns and `turn/steer` when the thread has an in-progress turn
+- interrupt uses `turn/interrupt` against the active turn when one exists
+
+That local-preview path deliberately stops short of full approval handling. Pending command/file/permission approvals require live server-request IDs from a persistent app-server or relay stream, so the current local-preview bridge reports real thread runtime state but does not replay approval requests yet.
+
+For local end-to-end iteration today:
+
+1. Run `codex remote start` on the host.
+2. Run `codex remote pair` to mint a fresh pairing session and capture the deep-link payload.
+3. Launch the Tauri shell from `apps/mobile` and let it read the local-preview bridge.
+4. Use `codex remote status` to verify host identity, relay stub state, and pairing-session count while the first-party relay connector is still under development.
 
 ## Non-Goals for v1
 

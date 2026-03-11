@@ -5,6 +5,7 @@ use std::time::Duration;
 use anyhow::Context;
 use anyhow::Result;
 use predicates::str::contains;
+use pretty_assertions::assert_eq;
 use serde_json::Value;
 use tempfile::TempDir;
 
@@ -111,6 +112,104 @@ async fn remote_pair_writes_pairing_session_and_prints_deep_link() -> Result<()>
         .as_array()
         .context("pairing.json should contain sessions")?;
     assert_eq!(sessions.len(), 1);
+
+    let mut stop = codex_command(codex_home.path())?;
+    stop.args(["remote", "stop"]).assert().success();
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn remote_start_writes_structured_host_identity_metadata() -> Result<()> {
+    let codex_home = TempDir::new()?;
+    let host_path = codex_home.path().join("remote").join("host.json");
+
+    let mut start = codex_command(codex_home.path())?;
+    start.args(["remote", "start"]).assert().success();
+
+    wait_for_path(&host_path).await?;
+    let host: Value = serde_json::from_str(&fs::read_to_string(&host_path)?)?;
+
+    assert_eq!(host["version"], Value::from(2));
+    assert_eq!(host["identity"]["algorithm"], Value::from("x25519"));
+    assert_eq!(host["relay"]["status"], Value::from("disconnected"));
+    assert_eq!(host["platform"].as_str(), Some(std::env::consts::OS));
+    assert!(host["hostName"].as_str().is_some());
+    assert!(host["identity"]["publicKey"].as_str().is_some());
+    assert!(host["identity"]["secretKey"].as_str().is_some());
+
+    let mut stop = codex_command(codex_home.path())?;
+    stop.args(["remote", "stop"]).assert().success();
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn remote_pair_prunes_expired_sessions_before_issuing_a_new_one() -> Result<()> {
+    let codex_home = TempDir::new()?;
+    let remote_dir = codex_home.path().join("remote");
+    fs::create_dir_all(&remote_dir)?;
+    let pairing_path = remote_dir.join("pairing.json");
+    fs::write(
+        &pairing_path,
+        serde_json::json!({
+            "version": 2,
+            "sessions": [
+                {
+                    "sessionId": "expired",
+                    "code": "EXPIRED",
+                    "deepLink": "codex://remote/pair?sessionId=expired",
+                    "createdAt": 1,
+                    "expiresAt": 2,
+                    "usedAt": null,
+                    "revokedAt": null
+                }
+            ]
+        })
+        .to_string(),
+    )?;
+
+    let mut start = codex_command(codex_home.path())?;
+    start.args(["remote", "start"]).assert().success();
+
+    let mut pair = codex_command(codex_home.path())?;
+    pair.args(["remote", "pair"])
+        .assert()
+        .success()
+        .stdout(contains("Session ID:"))
+        .stdout(contains("Expires at:"));
+
+    let pairing: Value = serde_json::from_str(&fs::read_to_string(&pairing_path)?)?;
+    let sessions = pairing["sessions"]
+        .as_array()
+        .context("pairing.json should contain sessions")?;
+    assert_eq!(sessions.len(), 1);
+    assert_ne!(sessions[0]["sessionId"].as_str(), Some("expired"));
+
+    let mut stop = codex_command(codex_home.path())?;
+    stop.args(["remote", "stop"]).assert().success();
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn remote_status_reports_host_identity_and_active_pairing_sessions() -> Result<()> {
+    let codex_home = TempDir::new()?;
+
+    let mut start = codex_command(codex_home.path())?;
+    start.args(["remote", "start"]).assert().success();
+
+    let mut pair = codex_command(codex_home.path())?;
+    pair.args(["remote", "pair"]).assert().success();
+
+    let mut status = codex_command(codex_home.path())?;
+    status
+        .args(["remote", "status"])
+        .assert()
+        .success()
+        .stdout(contains("host id: host_"))
+        .stdout(contains("host name: "))
+        .stdout(contains("pending pairing sessions: 1"));
 
     let mut stop = codex_command(codex_home.path())?;
     stop.args(["remote", "stop"]).assert().success();

@@ -60,8 +60,8 @@ use codex_core::config::resolve_oss_provider;
 use codex_core::config_loader::ConfigLoadError;
 use codex_core::config_loader::LoaderOverrides;
 use codex_core::config_loader::format_config_error_with_source;
-use codex_core::format_exec_policy_error_with_source;
 use codex_core::features::Feature;
+use codex_core::format_exec_policy_error_with_source;
 use codex_core::git_info::get_git_repo_root;
 use codex_feedback::CodexFeedback;
 use codex_otel::set_parent_from_context;
@@ -145,7 +145,10 @@ enum ExecAppServerClient {
 }
 
 impl ExecAppServerClient {
-    async fn request_typed<T>(&self, request: ClientRequest) -> Result<T, codex_app_server_client::TypedRequestError>
+    async fn request_typed<T>(
+        &self,
+        request: ClientRequest,
+    ) -> Result<T, codex_app_server_client::TypedRequestError>
     where
         T: serde::de::DeserializeOwned,
     {
@@ -164,7 +167,9 @@ impl ExecAppServerClient {
         match self {
             Self::InProcess(client) => client.resolve_server_request(request_id, result).await,
             #[cfg(unix)]
-            Self::UnixDomainSocket(client) => client.resolve_server_request(request_id, result).await,
+            Self::UnixDomainSocket(client) => {
+                client.resolve_server_request(request_id, result).await
+            }
         }
     }
 
@@ -257,7 +262,9 @@ async fn start_exec_app_server_client(
 
     let client = InProcessAppServerClient::start(in_process_start_args)
         .await
-        .map_err(|err| anyhow::anyhow!("failed to initialize in-process app-server client: {err}"))?;
+        .map_err(|err| {
+            anyhow::anyhow!("failed to initialize in-process app-server client: {err}")
+        })?;
     Ok(ExecAppServerClient::InProcess(client))
 }
 
@@ -667,8 +674,8 @@ async fn run_exec_session(args: ExecRunArgs) -> anyhow::Result<()> {
     }
 
     let mut request_ids = RequestIdSequencer::new();
-    let mut client = start_exec_app_server_client(&codex_home, &config, in_process_start_args)
-        .await?;
+    let mut client =
+        start_exec_app_server_client(&codex_home, &config, in_process_start_args).await?;
 
     // Handle resume subcommand by resolving a rollout path and using explicit resume API.
     let (primary_thread_id, fallback_session_configured) =
@@ -1943,7 +1950,10 @@ mod tests {
     #[test]
     fn remote_runtime_socket_path_uses_codex_home_remote_directory() {
         let path = remote_runtime_socket_path(std::path::Path::new("/tmp/codex-home"));
-        assert_eq!(path, PathBuf::from("/tmp/codex-home/remote/app-server.sock"));
+        assert_eq!(
+            path,
+            PathBuf::from("/tmp/codex-home/remote/app-server.sock")
+        );
     }
 
     #[cfg(unix)]

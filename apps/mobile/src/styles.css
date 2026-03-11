@@ -1,0 +1,487 @@
+:root {
+  color: #0f1721;
+  font-family: "Avenir Next", "Segoe UI", sans-serif;
+  background:
+    radial-gradient(
+      circle at top left,
+      rgba(222, 102, 52, 0.18),
+      transparent 28%
+    ),
+    radial-gradient(
+      circle at bottom right,
+      rgba(42, 116, 176, 0.2),
+      transparent 24%
+    ),
+    linear-gradient(180deg, #f3ede2 0%, #e8eef3 48%, #f8f4ee 100%);
+  --ink-strong: #14161d;
+  --ink: #243041;
+  --muted: #677181;
+  --line: rgba(26, 40, 58, 0.14);
+  --surface: rgba(255, 252, 247, 0.72);
+  --surface-strong: rgba(255, 252, 247, 0.92);
+  --surface-shadow: 0 20px 50px rgba(24, 36, 58, 0.12);
+  --accent: #de6634;
+  --accent-deep: #b6491f;
+  --success: #177a53;
+  --warning: #ab6c12;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  min-height: 100%;
+}
+
+body {
+  margin: 0;
+  color: var(--ink);
+}
+
+button,
+input,
+textarea {
+  font: inherit;
+}
+
+button {
+  cursor: pointer;
+}
+
+code {
+  font-family: "IBM Plex Mono", "SF Mono", monospace;
+  font-size: 0.93rem;
+}
+
+.app-shell,
+.screen {
+  min-height: 100dvh;
+}
+
+.app-shell {
+  max-width: 34rem;
+  margin: 0 auto;
+  padding: 1.25rem 1rem 6rem;
+}
+
+.shell-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: end;
+  gap: 1rem;
+  padding-bottom: 1.25rem;
+}
+
+.shell-main {
+  display: flex;
+  flex-direction: column;
+  gap: 1.5rem;
+}
+
+.screen {
+  display: flex;
+  flex-direction: column;
+  gap: 1.5rem;
+}
+
+.auth-screen {
+  max-width: 34rem;
+  margin: 0 auto;
+  padding: 1.5rem 1rem 4rem;
+}
+
+.auth-hero,
+.stack {
+  display: flex;
+  flex-direction: column;
+}
+
+.gap-sm {
+  gap: 0.45rem;
+}
+
+.gap-md {
+  gap: 0.85rem;
+}
+
+.gap-lg {
+  gap: 1.2rem;
+}
+
+.card,
+.approval-sheet,
+.composer,
+.status-banner {
+  background: var(--surface);
+  backdrop-filter: blur(20px);
+  border: 1px solid var(--line);
+  border-radius: 1.6rem;
+  box-shadow: var(--surface-shadow);
+}
+
+.card,
+.approval-sheet,
+.composer {
+  padding: 1.1rem;
+}
+
+.status-banner {
+  display: flex;
+  gap: 0.75rem;
+  align-items: center;
+  padding: 0.9rem 1rem;
+}
+
+.primary-button,
+.secondary-button,
+.ghost-button,
+.danger-button {
+  border-radius: 999px;
+  border: 1px solid transparent;
+  min-height: 2.75rem;
+  padding: 0.72rem 1rem;
+  transition:
+    transform 160ms ease,
+    background 160ms ease,
+    border-color 160ms ease;
+}
+
+.primary-button:hover,
+.secondary-button:hover,
+.ghost-button:hover,
+.danger-button:hover,
+.mode-chip:hover {
+  transform: translateY(-1px);
+}
+
+.primary-button {
+  background: linear-gradient(135deg, var(--accent) 0%, #ee8a41 100%);
+  color: white;
+}
+
+.secondary-button {
+  background: rgba(222, 102, 52, 0.08);
+  border-color: rgba(222, 102, 52, 0.28);
+  color: var(--accent-deep);
+}
+
+.ghost-button {
+  background: rgba(255, 255, 255, 0.45);
+  border-color: var(--line);
+  color: var(--ink);
+}
+
+.danger-button {
+  background: rgba(186, 44, 44, 0.08);
+  border-color: rgba(186, 44, 44, 0.2);
+  color: #8d2d2d;
+}
+
+.button-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.6rem;
+}
+
+.eyebrow,
+.section-label,
+.micro-label {
+  margin: 0;
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+  color: var(--muted);
+}
+
+.eyebrow,
+.section-label {
+  font-size: 0.73rem;
+}
+
+.micro-label {
+  font-size: 0.66rem;
+}
+
+h1,
+h2,
+h3,
+p {
+  margin: 0;
+}
+
+h1,
+h2 {
+  font-family: "Iowan Old Style", "Palatino Linotype", serif;
+  color: var(--ink-strong);
+}
+
+h1 {
+  font-size: clamp(1.9rem, 5vw, 2.4rem);
+  line-height: 1.04;
+}
+
+h2 {
+  font-size: 1.15rem;
+}
+
+h3 {
+  font-size: 0.98rem;
+}
+
+.lede,
+.muted,
+.pairing-link {
+  color: var(--muted);
+}
+
+.account-chip,
+.status-pill {
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  padding: 0.45rem 0.8rem;
+  background: rgba(255, 255, 255, 0.56);
+  font-size: 0.82rem;
+}
+
+.status-pill.success {
+  color: var(--success);
+}
+
+.status-pill.warning {
+  color: var(--warning);
+}
+
+.host-card,
+.thread-list-card {
+  color: inherit;
+  text-decoration: none;
+}
+
+.host-card-top,
+.thread-list-head,
+.approval-head,
+.thread-hero,
+.device-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 1rem;
+  align-items: start;
+}
+
+.host-card-meta,
+.thread-list-meta,
+.pairing-code-row,
+.timeline-header,
+.composer-mode-row,
+.capability-grid {
+  display: flex;
+  gap: 0.6rem;
+  flex-wrap: wrap;
+}
+
+.pairing-code-row {
+  justify-content: space-between;
+  border: 1px dashed rgba(36, 48, 65, 0.18);
+  border-radius: 1rem;
+  padding: 0.85rem;
+}
+
+.pairing-code {
+  font-size: 1.4rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+}
+
+.capability-grid {
+  gap: 0.75rem;
+}
+
+.capability-chip {
+  flex: 1 1 9rem;
+  padding: 0.8rem;
+  border-radius: 1rem;
+  background: rgba(255, 255, 255, 0.42);
+  border: 1px solid var(--line);
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  color: var(--muted);
+}
+
+.capability-chip.enabled {
+  color: var(--ink);
+  border-color: rgba(23, 122, 83, 0.22);
+  background: rgba(255, 255, 255, 0.72);
+}
+
+.search-field,
+.composer-field {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.search-field input,
+.composer-field textarea {
+  border-radius: 1rem;
+  border: 1px solid var(--line);
+  background: rgba(255, 255, 255, 0.74);
+  color: var(--ink);
+  padding: 0.9rem 1rem;
+}
+
+.composer {
+  position: sticky;
+  bottom: 5.5rem;
+}
+
+.composer-field textarea {
+  resize: vertical;
+  min-height: 7rem;
+}
+
+.mode-chip {
+  flex: 1 1 0;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.4);
+  min-height: 2.5rem;
+}
+
+.mode-chip.active {
+  border-color: rgba(222, 102, 52, 0.24);
+  background: rgba(222, 102, 52, 0.12);
+  color: var(--accent-deep);
+}
+
+.timeline {
+  display: flex;
+  flex-direction: column;
+  gap: 0.9rem;
+}
+
+.timeline-card {
+  border-radius: 1.3rem;
+  padding: 1rem;
+  border: 1px solid var(--line);
+  background: var(--surface-strong);
+}
+
+.timeline-card.user {
+  border-left: 0.35rem solid rgba(42, 116, 176, 0.6);
+}
+
+.timeline-card.agent {
+  border-left: 0.35rem solid rgba(23, 122, 83, 0.55);
+}
+
+.timeline-card.plan {
+  border-left: 0.35rem solid rgba(125, 94, 28, 0.6);
+}
+
+.timeline-card.reasoning {
+  border-left: 0.35rem solid rgba(111, 79, 178, 0.5);
+}
+
+.timeline-card.command {
+  border-left: 0.35rem solid rgba(222, 102, 52, 0.6);
+}
+
+.timeline-card.file {
+  border-left: 0.35rem solid rgba(66, 107, 153, 0.55);
+}
+
+.timeline-card.neutral {
+  border-left: 0.35rem solid rgba(112, 120, 134, 0.35);
+}
+
+.timeline-card code,
+.approval-card code {
+  display: block;
+  margin-top: 0.35rem;
+  margin-bottom: 0.35rem;
+  padding: 0.7rem 0.8rem;
+  border-radius: 0.9rem;
+  background: rgba(15, 23, 33, 0.06);
+  overflow-x: auto;
+}
+
+.approval-card {
+  display: flex;
+  flex-direction: column;
+  gap: 0.7rem;
+  border: 1px solid rgba(171, 108, 18, 0.16);
+  border-radius: 1.1rem;
+  background: rgba(255, 248, 237, 0.72);
+  padding: 0.95rem;
+}
+
+.bottom-nav {
+  position: fixed;
+  left: 50%;
+  bottom: 1rem;
+  transform: translateX(-50%);
+  width: min(30rem, calc(100vw - 2rem));
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 0.6rem;
+  padding: 0.6rem;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  background: rgba(250, 246, 239, 0.86);
+  backdrop-filter: blur(18px);
+  box-shadow: var(--surface-shadow);
+}
+
+.bottom-nav-link {
+  text-align: center;
+  text-decoration: none;
+  color: var(--muted);
+  padding: 0.78rem 0.9rem;
+  border-radius: 999px;
+}
+
+.bottom-nav-link.active {
+  background: rgba(222, 102, 52, 0.12);
+  color: var(--accent-deep);
+}
+
+.back-link {
+  color: var(--muted);
+  text-decoration: none;
+}
+
+.loading-screen {
+  align-items: center;
+  justify-content: center;
+  padding: 1.5rem;
+}
+
+.loading-card {
+  width: min(28rem, 100%);
+}
+
+@media (max-width: 640px) {
+  .host-card-top,
+  .thread-list-head,
+  .approval-head,
+  .thread-hero,
+  .device-row,
+  .shell-header {
+    flex-direction: column;
+  }
+
+  .pairing-code-row {
+    flex-direction: column;
+  }
+
+  .button-row {
+    flex-direction: column;
+  }
+
+  .button-row > * {
+    width: 100%;
+  }
+}
