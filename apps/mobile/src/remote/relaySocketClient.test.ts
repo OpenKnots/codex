@@ -1,8 +1,9 @@
 import { describe, expect, it, vi } from "vitest";
+import { relayMethods } from "./relayProtocol";
+import type { RelayWireEnvelope } from "./relayProtocol";
 import { createRelaySocketClient } from "./relaySocketClient";
 import type {
   RelaySocketClientEvent,
-  RelaySocketEnvelope,
   RelaySocketLike,
 } from "./relaySocketClient";
 
@@ -19,19 +20,14 @@ describe("relay socket client", () => {
       url: "wss://relay.example.test/mobile",
     });
 
-    const request = client.request<{ ok: boolean }>("bootstrap/get", {
-      includeThreads: false,
-    });
+    const request = client.request(relayMethods.bootstrapGet);
 
     expect(sockets).toHaveLength(1);
     sockets[0]?.open();
 
     await vi.waitFor(() => {
       expect(sockets[0]?.lastSent()).toMatchObject({
-        method: "bootstrap/get",
-        params: {
-          includeThreads: false,
-        },
+        method: relayMethods.bootstrapGet,
         type: "request",
       });
     });
@@ -44,13 +40,41 @@ describe("relay socket client", () => {
       ok: true,
       requestId: sent?.requestId,
       result: {
-        ok: true,
+        deviceGroups: [],
+        hosts: [],
+        session: {
+          accountLabel: "relay@openai.com",
+          nativeCapabilities: {
+            fileImport: true,
+            qrScanner: true,
+            relaySockets: true,
+            secureStore: true,
+          },
+          pairingCode: "PAIR-RELAY",
+          pairingUrl: "codex://remote/pair?code=PAIR-RELAY",
+          signedIn: true,
+          workspaceLabel: "Relay Workspace",
+        },
       },
       type: "response",
     });
 
     await expect(request).resolves.toEqual({
-      ok: true,
+      deviceGroups: [],
+      hosts: [],
+      session: {
+        accountLabel: "relay@openai.com",
+        nativeCapabilities: {
+          fileImport: true,
+          qrScanner: true,
+          relaySockets: true,
+          secureStore: true,
+        },
+        pairingCode: "PAIR-RELAY",
+        pairingUrl: "codex://remote/pair?code=PAIR-RELAY",
+        signedIn: true,
+        workspaceLabel: "Relay Workspace",
+      },
     });
   });
 
@@ -175,7 +199,7 @@ class FakeSocket implements RelaySocketLike {
   onmessage: ((event: MessageEvent<string>) => void) | null = null;
   onopen: ((event: Event) => void) | null = null;
   readyState = 0;
-  readonly sent: RelaySocketEnvelope[] = [];
+  readonly sent: RelayWireEnvelope[] = [];
 
   constructor(readonly url: string) {}
 
@@ -201,7 +225,7 @@ class FakeSocket implements RelaySocketLike {
     return this.sent.at(-1);
   }
 
-  message(payload: RelaySocketEnvelope) {
+  message(payload: RelayWireEnvelope) {
     this.onmessage?.({
       data: JSON.stringify(payload),
     } as MessageEvent<string>);
@@ -213,6 +237,6 @@ class FakeSocket implements RelaySocketLike {
   }
 
   send(message: string) {
-    this.sent.push(JSON.parse(message) as RelaySocketEnvelope);
+    this.sent.push(JSON.parse(message) as RelayWireEnvelope);
   }
 }

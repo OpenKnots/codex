@@ -1,4 +1,10 @@
 import { describe, expect, it, vi } from "vitest";
+import { relayMethods } from "./relayProtocol";
+import type {
+  RelayMethod,
+  RelayMethodParams,
+  RelayMethodResult,
+} from "./relayProtocol";
 import { createRelaySocketGateway } from "./relaySocketGateway";
 import type {
   RelaySocketClient,
@@ -140,21 +146,21 @@ describe("relay socket gateway", () => {
 
     expect(client.requests).toEqual([
       [
-        "thread/subscribe",
+        relayMethods.threadSubscribe,
         {
           hostId: "host-relay",
           threadId: "thread-relay",
         },
       ],
       [
-        "thread/read",
+        relayMethods.threadRead,
         {
           hostId: "host-relay",
           threadId: "thread-relay",
         },
       ],
       [
-        "approval/resolve",
+        relayMethods.approvalResolve,
         {
           hostId: "host-relay",
           resolution,
@@ -162,14 +168,14 @@ describe("relay socket gateway", () => {
         },
       ],
       [
-        "turn/interrupt",
+        relayMethods.turnInterrupt,
         {
           hostId: "host-relay",
           threadId: "thread-relay",
         },
       ],
       [
-        "turn/prompt",
+        relayMethods.turnPrompt,
         {
           hostId: "host-relay",
           input,
@@ -177,21 +183,21 @@ describe("relay socket gateway", () => {
         },
       ],
       [
-        "thread/subscribe",
+        relayMethods.threadSubscribe,
         {
           hostId: "host-relay",
           threadId: "thread-relay",
         },
       ],
       [
-        "thread/read",
+        relayMethods.threadRead,
         {
           hostId: "host-relay",
           threadId: "thread-relay",
         },
       ],
       [
-        "thread/unsubscribe",
+        relayMethods.threadUnsubscribe,
         {
           hostId: "host-relay",
           threadId: "thread-relay",
@@ -217,15 +223,21 @@ function createMockRelayClient(): RelaySocketClient & {
         listener(event);
       }
     },
-    async request<T>(method: string, params?: unknown) {
-      requests.push([method, params]);
-      if (method === "bootstrap/get") {
-        return bootstrap as T;
+    async request<M extends RelayMethod>(
+      method: M,
+      ...params: RelayMethodParams[M] extends undefined
+        ? []
+        : [params: RelayMethodParams[M]]
+    ): Promise<RelayMethodResult[M]> {
+      const requestParams = params[0] as RelayMethodParams[M];
+      requests.push([method, requestParams]);
+      if (method === relayMethods.bootstrapGet) {
+        return bootstrap as RelayMethodResult[M];
       }
-      if (method === "thread/read") {
-        return record as T;
+      if (method === relayMethods.threadRead) {
+        return record as RelayMethodResult[M];
       }
-      return undefined as T;
+      return undefined as RelayMethodResult[M];
     },
     requests,
     subscribe(listener) {

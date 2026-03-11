@@ -1,4 +1,5 @@
 import type { Thread } from "./protocol";
+import { relayMethods } from "./relayProtocol";
 import type { RelaySocketClient, RelaySocketClientEvent } from "./relaySocketClient";
 import type {
   ApprovalResolution,
@@ -87,7 +88,7 @@ export function createRelaySocketGateway({
     }
     if (!bootstrapPromise) {
       bootstrapPromise = client
-        .request<RemoteBootstrap>("bootstrap/get")
+        .request(relayMethods.bootstrapGet)
         .then((bootstrap) => {
           currentBootstrap = normalizeBootstrap(bootstrap, nativeCapabilities);
           stableBootstrap = currentBootstrap;
@@ -124,7 +125,7 @@ export function createRelaySocketGateway({
     if (cached) {
       return cached;
     }
-    const record = await client.request<RemoteThreadRecord>("thread/read", {
+    const record = await client.request(relayMethods.threadRead, {
       hostId,
       threadId,
     });
@@ -138,7 +139,7 @@ export function createRelaySocketGateway({
       return;
     }
     threadSubscriptions.set(key, { hostId, threadId });
-    void client.request("thread/subscribe", {
+    void client.request(relayMethods.threadSubscribe, {
       hostId,
       threadId,
     });
@@ -149,7 +150,7 @@ export function createRelaySocketGateway({
     if (!threadSubscriptions.delete(key)) {
       return;
     }
-    void client.request("thread/unsubscribe", {
+    void client.request(relayMethods.threadUnsubscribe, {
       hostId,
       threadId,
     });
@@ -157,9 +158,9 @@ export function createRelaySocketGateway({
 
   function resubscribeThreads() {
     for (const [key, subscription] of threadSubscriptions) {
-      void client.request("thread/subscribe", subscription);
+      void client.request(relayMethods.threadSubscribe, subscription);
       void client
-        .request<RemoteThreadRecord>("thread/read", subscription)
+        .request(relayMethods.threadRead, subscription)
         .then((record) => {
           threadRecords.set(key, record);
           emitThread(key, record);
@@ -173,7 +174,7 @@ export function createRelaySocketGateway({
       return (await getBootstrap()).session;
     },
     async signIn() {
-      const bootstrap = await client.request<RemoteBootstrap>("session/signIn");
+      const bootstrap = await client.request(relayMethods.sessionSignIn);
       currentBootstrap = normalizeBootstrap(bootstrap, nativeCapabilities);
       stableBootstrap = currentBootstrap;
       emitBootstrap();
@@ -182,7 +183,7 @@ export function createRelaySocketGateway({
       return (await getBootstrap()).hosts;
     },
     async listThreads(hostId: string): Promise<Thread[]> {
-      return client.request<Thread[]>("thread/list", {
+      return client.request(relayMethods.threadList, {
         hostId,
       });
     },
@@ -201,7 +202,7 @@ export function createRelaySocketGateway({
         decision: resolution.decision,
         requestId: resolution.requestId,
       });
-      await client.request("approval/resolve", {
+      await client.request(relayMethods.approvalResolve, {
         hostId,
         resolution,
         threadId,
@@ -209,21 +210,21 @@ export function createRelaySocketGateway({
     },
     async interruptTurn(hostId: string, threadId: string) {
       inspection.interrupts.push(threadId);
-      await client.request("turn/interrupt", {
+      await client.request(relayMethods.turnInterrupt, {
         hostId,
         threadId,
       });
     },
     async sendPrompt(hostId: string, threadId: string, input: SendTurnInput) {
       inspection.prompts.push(input.text);
-      await client.request("turn/prompt", {
+      await client.request(relayMethods.turnPrompt, {
         hostId,
         input,
         threadId,
       });
     },
     async revokeDevice(hostId: string, deviceId: string) {
-      const bootstrap = await client.request<RemoteBootstrap>("device/revoke", {
+      const bootstrap = await client.request(relayMethods.deviceRevoke, {
         deviceId,
         hostId,
       });

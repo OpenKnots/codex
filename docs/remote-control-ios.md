@@ -108,11 +108,13 @@ The current local-preview bridge is intentionally scoped to one active live-thre
 
 Alongside that local-preview path, the mobile app now has a typed relay socket boundary:
 
+- `apps/mobile/src/remote/relayProtocol.ts` is now the single source of truth for relay request methods, params, results, and server notifications, so the socket client, gateway, and tests share one contract
 - the WebSocket client uses request/response envelopes for `bootstrap/get`, `thread/read`, `thread/list`, `turn/prompt`, `turn/interrupt`, `approval/resolve`, and future relay control-plane methods
 - bootstrap and live-thread notifications reuse the same `RemoteGateway` contract as mock data and local preview, so the UI does not care which transport is active
 - the relay gateway injects device-native capabilities into bootstrap state so iPhone UX decisions still come from the client runtime rather than the relay
 - reconnecting socket state is surfaced immediately by the gateway as a temporary `Relay reconnecting` host status, then restored to the last stable bootstrap payload when the socket reconnects
 - live relay thread subscriptions now issue explicit `thread/subscribe` and `thread/unsubscribe` requests, and the gateway automatically reattaches and refreshes active threads after reconnect
+- relay-delivered approval updates now drive the same approval sheet path as local preview, which keeps the UI transport-agnostic as the real first-party relay handshake is filled in
 
 For local end-to-end iteration today:
 

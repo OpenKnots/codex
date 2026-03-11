@@ -32,6 +32,7 @@ This package currently ships the five planned screens with a mixed development s
 - local preview can browse real host threads and issue `turn/start`, `turn/steer`, and `turn/interrupt` over the UDS app-server socket
 - local preview also maintains one active live thread stream, pushes thread runtime updates into the webview, and replays command, file-change, and permission approvals over the subscribed app-server connection
 - relay/control-plane bootstrap is now subscribed separately, and local preview prefers a native Tauri bootstrap stream before falling back to polling, so host lists, device trust state, and session pairing metadata refresh in place without reloading the app shell
-- the relay path now has a typed WebSocket client and gateway adapter that can hydrate bootstrap and live thread state against the same `RemoteGateway` contract used by the rest of the UI
+- the relay path now has a typed WebSocket client and gateway adapter, backed by `src/remote/relayProtocol.ts`, that can hydrate bootstrap and live thread state against the same `RemoteGateway` contract used by the rest of the UI
+- relay approval notifications now feed the same approval sheet UX as local preview, so the thread UI stays consistent across transports
 
 The app still does not connect to the first-party relay or complete device pairing end to end. Local preview is a host-side developer mode, not the shipped remote transport.

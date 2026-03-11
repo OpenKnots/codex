@@ -2,6 +2,17 @@ import { act, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { App } from "./App";
 import { createMockGateway } from "../remote/mockGateway";
+import { relayMethods } from "../remote/relayProtocol";
+import type {
+  RelayMethod,
+  RelayMethodParams,
+  RelayMethodResult,
+} from "../remote/relayProtocol";
+import { createRelaySocketGateway } from "../remote/relaySocketGateway";
+import type {
+  RelaySocketClient,
+  RelaySocketClientEvent,
+} from "../remote/relaySocketClient";
 import type { RemoteBootstrap, RemoteGateway } from "../remote/types";
 
 describe("Codex remote mobile shell", () => {
@@ -125,6 +136,95 @@ describe("Codex remote mobile shell", () => {
 
     expect(await screen.findByText(/relay reconnecting/i)).toBeVisible();
   });
+
+  it("renders relay approval updates through the same approval sheet flow", async () => {
+    const user = userEvent.setup();
+    const relay = createRelayAppGateway();
+
+    render(
+      <App
+        gateway={relay.gateway}
+        initialEntries={["/hosts/host-relay/threads/thread-relay"]}
+      />,
+    );
+
+    expect(
+      await screen.findByRole("heading", { name: /relay thread/i }),
+    ).toBeVisible();
+
+    await act(async () => {
+      relay.emit({
+        hostId: "host-relay",
+        record: {
+          ...createRelayThreadRecord(),
+          approvals: [
+            {
+              decisions: [
+                "accept",
+                "acceptForSession",
+                "decline",
+                "cancel",
+              ],
+              params: {
+                additionalPermissions: null,
+                approvalId: null,
+                availableDecisions: [
+                  "accept",
+                  "acceptForSession",
+                  "decline",
+                  "cancel",
+                ],
+                command: "pnpm tauri ios dev",
+                commandActions: [],
+                cwd: "/workspace/codex/apps/mobile",
+                itemId: "item-relay-command",
+                reason:
+                  "Restart the relay-managed iOS shell from the phone.",
+                proposedExecpolicyAmendment: null,
+                proposedNetworkPolicyAmendments: null,
+                skillMetadata: null,
+                threadId: "thread-relay",
+                turnId: "turn-relay-1",
+              },
+              requestId: "approval-relay-command",
+              type: "command",
+            },
+          ],
+          runtime: {
+            composerMode: "steer",
+            connection: "online",
+            phase: "waitingOnApproval",
+            statusCopy: "Waiting on approval from the relay-connected phone.",
+          },
+          thread: {
+            ...createRelayThreadRecord().thread,
+            status: { type: "active", activeFlags: ["waitingOnApproval"] },
+          },
+        },
+        threadId: "thread-relay",
+        type: "thread/update",
+      });
+    });
+
+    expect(
+      await screen.findByRole("heading", { name: /approval required/i }),
+    ).toBeVisible();
+    expect(screen.getAllByText(/pnpm tauri ios dev/i)).toHaveLength(2);
+
+    await user.click(screen.getByRole("button", { name: /approve for session/i }));
+
+    expect(relay.requests).toContainEqual([
+      relayMethods.approvalResolve,
+      {
+        hostId: "host-relay",
+        resolution: {
+          decision: "acceptForSession",
+          requestId: "approval-relay-command",
+        },
+        threadId: "thread-relay",
+      },
+    ]);
+  });
 });
 
 async function createBootstrapGateway(): Promise<{
@@ -172,4 +272,117 @@ async function createBootstrapGateway(): Promise<{
 
 function clone<T>(value: T): T {
   return JSON.parse(JSON.stringify(value)) as T;
+}
+
+function createRelayAppGateway(): {
+  emit(event: RelaySocketClientEvent): void;
+  gateway: RemoteGateway;
+  requests: Array<[string, unknown]>;
+} {
+  const listeners = new Set<(event: RelaySocketClientEvent) => void>();
+  const requests: Array<[string, unknown]> = [];
+  const bootstrap = createRelayBootstrap();
+  const threadRecord = createRelayThreadRecord();
+  const client: RelaySocketClient = {
+    close() {},
+    async request<M extends RelayMethod>(
+      method: M,
+      ...params: RelayMethodParams[M] extends undefined
+        ? []
+        : [params: RelayMethodParams[M]]
+    ): Promise<RelayMethodResult[M]> {
+      const requestParams = params[0] as RelayMethodParams[M];
+      requests.push([method, requestParams]);
+      if (method === relayMethods.bootstrapGet) {
+        return clone(bootstrap) as RelayMethodResult[M];
+      }
+      if (method === relayMethods.threadRead) {
+        return clone(threadRecord) as unknown as RelayMethodResult[M];
+      }
+      if (method === relayMethods.threadList) {
+        return [clone(threadRecord.thread)] as unknown as RelayMethodResult[M];
+      }
+      return undefined as RelayMethodResult[M];
+    },
+    subscribe(listener) {
+      listeners.add(listener);
+      return () => {
+        listeners.delete(listener);
+      };
+    },
+  };
+
+  return {
+    emit(event) {
+      for (const listener of listeners) {
+        listener(event);
+      }
+    },
+    gateway: createRelaySocketGateway({
+      client,
+    }),
+    requests,
+  };
+}
+
+function createRelayBootstrap(): RemoteBootstrap {
+  return {
+    deviceGroups: [],
+    hosts: [
+      {
+        detail: "Relay host online",
+        id: "host-relay",
+        lastSeenAt: 1720000300,
+        name: "Relay MacBook",
+        pairedAt: 1720000000,
+        platform: "macOS",
+        relayStatus: "Relay protected",
+        status: "online",
+      },
+    ],
+    session: {
+      accountLabel: "relay@openai.com",
+      nativeCapabilities: {
+        fileImport: true,
+        qrScanner: true,
+        relaySockets: true,
+        secureStore: true,
+      },
+      pairingCode: "PAIR-RELAY",
+      pairingUrl: "codex://remote/pair?code=PAIR-RELAY",
+      signedIn: true,
+      workspaceLabel: "Relay Workspace",
+    },
+  };
+}
+
+function createRelayThreadRecord() {
+  return {
+    approvals: [],
+    hostId: "host-relay",
+    runtime: {
+      composerMode: "newTurn" as const,
+      connection: "online" as const,
+      phase: "completed" as const,
+      statusCopy: "Relay thread ready for input.",
+    },
+    thread: {
+      agentNickname: null,
+      agentRole: null,
+      cliVersion: "1.0.0",
+      createdAt: 1720000000,
+      cwd: "/workspace/codex",
+      ephemeral: false,
+      gitInfo: null,
+      id: "thread-relay",
+      modelProvider: "openai",
+      name: "Relay thread",
+      path: null,
+      preview: "Relay-managed approval test.",
+      source: "appServer" as const,
+      status: { type: "idle" as const },
+      turns: [],
+      updatedAt: 1720000300,
+    },
+  };
 }

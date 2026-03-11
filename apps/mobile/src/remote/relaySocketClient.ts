@@ -1,46 +1,18 @@
-import type { RemoteBootstrap, RemoteThreadRecord } from "./types";
-
-export type RelaySocketEnvelope =
-  | RelaySocketRequestEnvelope
-  | RelaySocketResponseEnvelope
-  | RelaySocketClientEvent;
+import type {
+  RelayMethod,
+  RelayMethodParams,
+  RelayMethodResult,
+  RelayRequestEnvelope,
+  RelayServerNotification,
+  RelayWireEnvelope,
+} from "./relayProtocol";
 
 export type RelaySocketClientEvent =
   | {
       type: "connection/status";
       status: "connected" | "reconnecting";
     }
-  | {
-      type: "bootstrap/update";
-      bootstrap: RemoteBootstrap;
-    }
-  | {
-      type: "thread/update";
-      hostId: string;
-      threadId: string;
-      record: RemoteThreadRecord;
-    };
-
-type RelaySocketRequestEnvelope = {
-  type: "request";
-  requestId: string;
-  method: string;
-  params?: unknown;
-};
-
-type RelaySocketResponseEnvelope =
-  | {
-      type: "response";
-      requestId: string;
-      ok: true;
-      result: unknown;
-    }
-  | {
-      type: "response";
-      requestId: string;
-      ok: false;
-      error: string;
-    };
+  | RelayServerNotification;
 
 export interface RelaySocketLike {
   onclose: ((event: CloseEvent) => void) | null;
@@ -53,7 +25,12 @@ export interface RelaySocketLike {
 }
 
 export interface RelaySocketClient {
-  request<T>(method: string, params?: unknown): Promise<T>;
+  request<M extends RelayMethod>(
+    method: M,
+    ...params: RelayMethodParams[M] extends undefined
+      ? []
+      : [params: RelayMethodParams[M]]
+  ): Promise<RelayMethodResult[M]>;
   subscribe(listener: (event: RelaySocketClientEvent) => void): () => void;
   close(): void;
 }
@@ -104,7 +81,7 @@ export function createRelaySocketClient(
   }
 
   function handleMessage(rawMessage: string) {
-    const envelope = JSON.parse(rawMessage) as RelaySocketEnvelope;
+    const envelope = JSON.parse(rawMessage) as RelayWireEnvelope;
     if (envelope.type === "request") {
       return;
     }
@@ -202,28 +179,42 @@ export function createRelaySocketClient(
       socket = null;
       connectPromise = null;
     },
-    async request<T>(method: string, params?: unknown): Promise<T> {
+    async request<M extends RelayMethod>(
+      method: M,
+      ...params: RelayMethodParams[M] extends undefined
+        ? []
+        : [params: RelayMethodParams[M]]
+    ): Promise<RelayMethodResult[M]> {
       const activeSocket = await ensureConnected();
       const requestId = `request-${nextRequestId}`;
       nextRequestId += 1;
 
-      const result = new Promise<T>((resolve, reject) => {
+      const result = new Promise<RelayMethodResult[M]>((resolve, reject) => {
         pendingRequests.set(requestId, {
           reject,
           resolve: (value) => {
-            resolve(value as T);
+            resolve(value as RelayMethodResult[M]);
           },
         });
       });
 
-      activeSocket.send(
-        JSON.stringify({
-          method,
-          params,
-          requestId,
-          type: "request",
-        } satisfies RelaySocketRequestEnvelope),
-      );
+      const requestParams = params[0] as RelayMethodParams[M];
+      const envelope = (
+        requestParams === undefined
+          ? {
+              method,
+              requestId,
+              type: "request",
+            }
+          : {
+              method,
+              params: requestParams,
+              requestId,
+              type: "request",
+            }
+      ) as RelayRequestEnvelope<M>;
+
+      activeSocket.send(JSON.stringify(envelope));
 
       return result;
     },
