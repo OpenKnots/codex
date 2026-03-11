@@ -73,7 +73,7 @@ describe("relay socket gateway", () => {
     unsubscribe();
   });
 
-  it("hydrates thread state and routes thread actions through relay requests", async () => {
+  it("hydrates thread state, manages relay subscriptions, and routes thread actions through relay requests", async () => {
     const client = createMockRelayClient();
     const gateway = createRelaySocketGateway({
       client,
@@ -127,7 +127,25 @@ describe("relay socket gateway", () => {
     };
     await gateway.sendPrompt("host-relay", "thread-relay", input);
 
+    client.emit({
+      status: "reconnecting",
+      type: "connection/status",
+    });
+    client.emit({
+      status: "connected",
+      type: "connection/status",
+    });
+
+    unsubscribe();
+
     expect(client.requests).toEqual([
+      [
+        "thread/subscribe",
+        {
+          hostId: "host-relay",
+          threadId: "thread-relay",
+        },
+      ],
       [
         "thread/read",
         {
@@ -158,9 +176,28 @@ describe("relay socket gateway", () => {
           threadId: "thread-relay",
         },
       ],
+      [
+        "thread/subscribe",
+        {
+          hostId: "host-relay",
+          threadId: "thread-relay",
+        },
+      ],
+      [
+        "thread/read",
+        {
+          hostId: "host-relay",
+          threadId: "thread-relay",
+        },
+      ],
+      [
+        "thread/unsubscribe",
+        {
+          hostId: "host-relay",
+          threadId: "thread-relay",
+        },
+      ],
     ]);
-
-    unsubscribe();
   });
 });
 

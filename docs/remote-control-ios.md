@@ -112,6 +112,7 @@ Alongside that local-preview path, the mobile app now has a typed relay socket b
 - bootstrap and live-thread notifications reuse the same `RemoteGateway` contract as mock data and local preview, so the UI does not care which transport is active
 - the relay gateway injects device-native capabilities into bootstrap state so iPhone UX decisions still come from the client runtime rather than the relay
 - reconnecting socket state is surfaced immediately by the gateway as a temporary `Relay reconnecting` host status, then restored to the last stable bootstrap payload when the socket reconnects
+- live relay thread subscriptions now issue explicit `thread/subscribe` and `thread/unsubscribe` requests, and the gateway automatically reattaches and refreshes active threads after reconnect
 
 For local end-to-end iteration today:
 

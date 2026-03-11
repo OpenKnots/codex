@@ -20,6 +20,7 @@ export function createRelaySocketGateway({
   const bootstrapListeners = new Set<(bootstrap: RemoteBootstrap) => void>();
   const threadListeners = new Map<string, Set<(record: RemoteThreadRecord) => void>>();
   const threadRecords = new Map<string, RemoteThreadRecord>();
+  const threadSubscriptions = new Map<string, { hostId: string; threadId: string }>();
   const inspection: GatewayInspection = {
     approvalsResolved: [],
     interrupts: [],
@@ -49,6 +50,7 @@ export function createRelaySocketGateway({
         currentBootstrap = stableBootstrap;
         emitBootstrap();
       }
+      resubscribeThreads();
       return;
     }
     if (event.type === "bootstrap/update") {
@@ -113,6 +115,59 @@ export function createRelaySocketGateway({
     }
   }
 
+  async function readThreadRecord(
+    hostId: string,
+    threadId: string,
+  ): Promise<RemoteThreadRecord> {
+    const key = threadKey(hostId, threadId);
+    const cached = threadRecords.get(key);
+    if (cached) {
+      return cached;
+    }
+    const record = await client.request<RemoteThreadRecord>("thread/read", {
+      hostId,
+      threadId,
+    });
+    threadRecords.set(key, record);
+    return record;
+  }
+
+  function subscribeThread(hostId: string, threadId: string) {
+    const key = threadKey(hostId, threadId);
+    if (threadSubscriptions.has(key)) {
+      return;
+    }
+    threadSubscriptions.set(key, { hostId, threadId });
+    void client.request("thread/subscribe", {
+      hostId,
+      threadId,
+    });
+  }
+
+  function unsubscribeThread(hostId: string, threadId: string) {
+    const key = threadKey(hostId, threadId);
+    if (!threadSubscriptions.delete(key)) {
+      return;
+    }
+    void client.request("thread/unsubscribe", {
+      hostId,
+      threadId,
+    });
+  }
+
+  function resubscribeThreads() {
+    for (const [key, subscription] of threadSubscriptions) {
+      void client.request("thread/subscribe", subscription);
+      void client
+        .request<RemoteThreadRecord>("thread/read", subscription)
+        .then((record) => {
+          threadRecords.set(key, record);
+          emitThread(key, record);
+        })
+        .catch(() => {});
+    }
+  }
+
   return {
     async getSession() {
       return (await getBootstrap()).session;
@@ -132,17 +187,7 @@ export function createRelaySocketGateway({
       });
     },
     async getThread(hostId: string, threadId: string) {
-      const key = threadKey(hostId, threadId);
-      const cached = threadRecords.get(key);
-      if (cached) {
-        return cached;
-      }
-      const record = await client.request<RemoteThreadRecord>("thread/read", {
-        hostId,
-        threadId,
-      });
-      threadRecords.set(key, record);
-      return record;
+      return readThreadRecord(hostId, threadId);
     },
     async listDeviceGroups() {
       return (await getBootstrap()).deviceGroups;
@@ -191,12 +236,13 @@ export function createRelaySocketGateway({
       const listeners = threadListeners.get(key) ?? new Set();
       listeners.add(listener);
       threadListeners.set(key, listeners);
+      subscribeThread(hostId, threadId);
 
       const cached = threadRecords.get(key);
       if (cached) {
         listener(cached);
       } else {
-        void this.getThread(hostId, threadId).then((record) => {
+        void readThreadRecord(hostId, threadId).then((record) => {
           if (threadListeners.get(key)?.has(listener)) {
             listener(record);
           }
@@ -211,6 +257,7 @@ export function createRelaySocketGateway({
         current.delete(listener);
         if (current.size === 0) {
           threadListeners.delete(key);
+          unsubscribeThread(hostId, threadId);
         }
       };
     },
