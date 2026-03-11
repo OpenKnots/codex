@@ -365,6 +365,8 @@ function ThreadRoute() {
     record.runtime.phase === "running" ||
     record.runtime.phase === "waitingOnApproval";
   const isHostOnline = record.runtime.connection === "online";
+  const canInterrupt = isHostOnline && hasActiveTurn;
+  const canQueuePrompt = isHostOnline;
 
   async function handleResolveApproval(
     approval: RemoteApproval,
@@ -389,6 +391,9 @@ function ThreadRoute() {
   }
 
   async function handleInterrupt() {
+    if (!canInterrupt) {
+      return;
+    }
     await gateway.interruptTurn(resolvedHostId, resolvedThreadId);
     await queryClient.invalidateQueries({
       queryKey: gatewayQueryKeys.thread(resolvedHostId, resolvedThreadId),
@@ -400,6 +405,9 @@ function ThreadRoute() {
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
+    if (!canQueuePrompt) {
+      return;
+    }
     const prompt = draft.trim();
     if (prompt.length === 0) {
       return;
@@ -421,6 +429,9 @@ function ThreadRoute() {
   }
 
   async function handleImport() {
+    if (!canQueuePrompt) {
+      return;
+    }
     const filePath = await selectAttachmentImport();
     if (!filePath) {
       return;
@@ -446,6 +457,7 @@ function ThreadRoute() {
         </div>
         <button
           className="danger-button"
+          disabled={!canInterrupt}
           onClick={handleInterrupt}
           type="button"
         >
@@ -568,8 +580,13 @@ function ThreadRoute() {
         >
           <button
             className={
-              composerMode === "newTurn" ? "mode-chip active" : "mode-chip"
+              !canQueuePrompt
+                ? "mode-chip disabled"
+                : composerMode === "newTurn"
+                  ? "mode-chip active"
+                  : "mode-chip"
             }
+            disabled={!canQueuePrompt}
             onClick={() => setComposerMode("newTurn")}
             type="button"
           >
@@ -579,11 +596,11 @@ function ThreadRoute() {
             className={
               composerMode === "steer"
                 ? "mode-chip active"
-                : hasActiveTurn
+                : canQueuePrompt && hasActiveTurn
                   ? "mode-chip"
                   : "mode-chip disabled"
             }
-            disabled={!hasActiveTurn}
+            disabled={!canQueuePrompt || !hasActiveTurn}
             onClick={() => setComposerMode("steer")}
             type="button"
           >
@@ -594,9 +611,12 @@ function ThreadRoute() {
         <label className="composer-field">
           <span className="micro-label">Composer</span>
           <textarea
+            disabled={!canQueuePrompt}
             onChange={(event) => setComposerDraft(key, event.target.value)}
             placeholder={
-              hasActiveTurn
+              !canQueuePrompt
+                ? "Wait for the host to reconnect before sending the next turn."
+                : hasActiveTurn
                 ? "Refine the running turn or start the next one."
                 : "Queue up the next turn for this thread."
             }
@@ -605,11 +625,22 @@ function ThreadRoute() {
           />
         </label>
 
+        {!canQueuePrompt ? (
+          <p className="muted composer-hint">
+            Queueing is unavailable while the host is offline.
+          </p>
+        ) : null}
+
         <div className="button-row">
-          <button className="ghost-button" onClick={handleImport} type="button">
+          <button
+            className="ghost-button"
+            disabled={!canQueuePrompt}
+            onClick={handleImport}
+            type="button"
+          >
             Import attachment
           </button>
-          <button className="primary-button" type="submit">
+          <button className="primary-button" disabled={!canQueuePrompt} type="submit">
             Send
           </button>
         </div>

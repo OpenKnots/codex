@@ -115,6 +115,7 @@ Alongside that local-preview path, the mobile app now has a typed relay socket b
 - reconnecting socket state is surfaced immediately by the gateway as a temporary `Relay reconnecting` host status, then restored to the last stable bootstrap payload when the socket reconnects
 - live relay thread subscriptions now issue explicit `thread/subscribe` and `thread/unsubscribe` requests, and the gateway automatically reattaches and refreshes active threads after reconnect
 - relay-delivered approval updates now drive the same approval sheet path as local preview, which keeps the UI transport-agnostic as the real first-party relay handshake is filled in
+- the live thread composer now disables queueing, attachment import, and interrupt actions when the runtime reports the host offline, so the app does not offer actions the host cannot honor
 
 For local end-to-end iteration today:
 

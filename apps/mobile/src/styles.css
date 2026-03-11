@@ -168,6 +168,15 @@ code {
   transform: translateY(-1px);
 }
 
+.primary-button:disabled,
+.secondary-button:disabled,
+.ghost-button:disabled,
+.danger-button:disabled {
+  cursor: default;
+  opacity: 0.55;
+  transform: none;
+}
+
 .primary-button {
   background: linear-gradient(135deg, var(--accent) 0%, #ee8a41 100%);
   color: white;
@@ -371,6 +380,15 @@ h3 {
 .composer-field textarea {
   resize: vertical;
   min-height: 7rem;
+}
+
+.composer-field textarea:disabled {
+  background: rgba(255, 255, 255, 0.44);
+  color: var(--muted);
+}
+
+.composer-hint {
+  font-size: 0.88rem;
 }
 
 .mode-chip {

@@ -34,5 +34,6 @@ This package currently ships the five planned screens with a mixed development s
 - relay/control-plane bootstrap is now subscribed separately, and local preview prefers a native Tauri bootstrap stream before falling back to polling, so host lists, device trust state, and session pairing metadata refresh in place without reloading the app shell
 - the relay path now has a typed WebSocket client and gateway adapter, backed by `src/remote/relayProtocol.ts`, that can hydrate bootstrap and live thread state against the same `RemoteGateway` contract used by the rest of the UI
 - relay approval notifications now feed the same approval sheet UX as local preview, so the thread UI stays consistent across transports
+- the thread composer and interrupt controls now mirror host-runtime availability, disabling queueing and dead-end actions when a host is offline instead of letting the user submit work that cannot run
 
 The app still does not connect to the first-party relay or complete device pairing end to end. Local preview is a host-side developer mode, not the shipped remote transport.

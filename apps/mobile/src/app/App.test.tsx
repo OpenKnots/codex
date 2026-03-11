@@ -106,6 +106,28 @@ describe("Codex remote mobile shell", () => {
     expect(screen.getByRole("button", { name: /steer in-flight/i })).toBeDisabled();
   });
 
+  it("disables thread actions when the host runtime is offline", async () => {
+    render(
+      <App
+        gateway={createMockGateway()}
+        initialEntries={["/hosts/host-lab/threads/thread-linux"]}
+      />,
+    );
+
+    expect(
+      await screen.findByRole("heading", { name: /relay daemon diagnostics/i }),
+    ).toBeVisible();
+    expect(screen.getByRole("button", { name: /interrupt turn/i })).toBeDisabled();
+    expect(screen.getByRole("button", { name: /send/i })).toBeDisabled();
+    expect(
+      screen.getByRole("button", { name: /import attachment/i }),
+    ).toBeDisabled();
+    expect(screen.getByRole("textbox", { name: /composer/i })).toBeDisabled();
+    expect(
+      screen.getByText(/queueing is unavailable while the host is offline/i),
+    ).toBeVisible();
+  });
+
   it("refreshes host bootstrap surfaces when the gateway pushes connector updates", async () => {
     const gateway = await createBootstrapGateway();
 
