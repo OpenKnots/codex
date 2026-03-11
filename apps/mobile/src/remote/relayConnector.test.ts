@@ -10,28 +10,110 @@ import type {
 } from "./types";
 
 const bridge = vi.hoisted(() => ({
+  listenRemoteConnectorSnapshots: vi.fn(),
   readRemoteConnectorSnapshot: vi.fn(),
+  startRemoteConnectorStream: vi.fn(),
+  stopRemoteConnectorStream: vi.fn(),
 }));
 
 vi.mock("../native/bridge", async () => {
   const actual = await vi.importActual("../native/bridge");
   return {
     ...actual,
+    listenRemoteConnectorSnapshots: bridge.listenRemoteConnectorSnapshots,
     readRemoteConnectorSnapshot: bridge.readRemoteConnectorSnapshot,
+    startRemoteConnectorStream: bridge.startRemoteConnectorStream,
+    stopRemoteConnectorStream: bridge.stopRemoteConnectorStream,
   };
 });
 
 describe("relay connectors", () => {
   beforeEach(() => {
     vi.useFakeTimers();
+    bridge.listenRemoteConnectorSnapshots.mockReset();
     bridge.readRemoteConnectorSnapshot.mockReset();
+    bridge.startRemoteConnectorStream.mockReset();
+    bridge.stopRemoteConnectorStream.mockReset();
   });
 
   afterEach(() => {
     vi.useRealTimers();
   });
 
-  it("publishes updated local preview bootstrap snapshots", async () => {
+  it("prefers native bootstrap events when the bridge supports streaming", async () => {
+    let nativeListener:
+      | ((snapshot: RelayConnectorSnapshot) => void)
+      | undefined;
+    const removeNativeListener = vi.fn();
+    bridge.listenRemoteConnectorSnapshots.mockImplementation(
+      async (listener: (snapshot: RelayConnectorSnapshot) => void) => {
+        nativeListener = listener;
+        return removeNativeListener;
+      },
+    );
+    bridge.startRemoteConnectorStream.mockResolvedValue(undefined);
+    bridge.stopRemoteConnectorStream.mockResolvedValue(undefined);
+
+    const connector = createLocalPreviewRelayConnector(
+      createSnapshot({
+        session: {
+          pairingCode: "PAIR-LOCAL",
+        },
+      }),
+      createNativeCapabilities(),
+    );
+    const listener = vi.fn();
+
+    const unsubscribe = connector.subscribe(listener);
+
+    expect(listener).toHaveBeenCalledWith(
+      expect.objectContaining({
+        hosts: [expect.objectContaining({ relayStatus: "localPreview" })],
+        session: expect.objectContaining({ pairingCode: "PAIR-LOCAL" }),
+      }),
+    );
+
+    await vi.waitFor(() => {
+      expect(bridge.startRemoteConnectorStream).toHaveBeenCalledTimes(1);
+    });
+
+    await vi.advanceTimersByTimeAsync(2_100);
+    expect(bridge.readRemoteConnectorSnapshot).not.toHaveBeenCalled();
+
+    nativeListener?.(
+      createSnapshot({
+        hosts: [
+          {
+            relayStatus: "relayConnected",
+          },
+        ],
+        session: {
+          pairingCode: "PAIR-EVENT",
+        },
+      }),
+    );
+
+    await vi.waitFor(() => {
+      expect(listener).toHaveBeenLastCalledWith(
+        expect.objectContaining({
+          hosts: [expect.objectContaining({ relayStatus: "relayConnected" })],
+          session: expect.objectContaining({ pairingCode: "PAIR-EVENT" }),
+        }),
+      );
+    });
+
+    unsubscribe();
+
+    expect(removeNativeListener).toHaveBeenCalledTimes(1);
+    expect(bridge.stopRemoteConnectorStream).toHaveBeenCalledTimes(1);
+  });
+
+  it("falls back to polling when native bootstrap streaming is unavailable", async () => {
+    bridge.listenRemoteConnectorSnapshots.mockResolvedValue(() => {});
+    bridge.startRemoteConnectorStream.mockRejectedValue(
+      new Error("stream unavailable"),
+    );
+
     const connector = createLocalPreviewRelayConnector(
       createSnapshot({
         session: {
@@ -56,14 +138,12 @@ describe("relay connectors", () => {
 
     const unsubscribe = connector.subscribe(listener);
 
-    await vi.waitFor(() => {
-      expect(listener).toHaveBeenCalledWith(
-        expect.objectContaining({
-          hosts: [expect.objectContaining({ relayStatus: "localPreview" })],
-          session: expect.objectContaining({ pairingCode: "PAIR-LOCAL" }),
-        }),
-      );
-    });
+    expect(listener).toHaveBeenCalledWith(
+      expect.objectContaining({
+        hosts: [expect.objectContaining({ relayStatus: "localPreview" })],
+        session: expect.objectContaining({ pairingCode: "PAIR-LOCAL" }),
+      }),
+    );
 
     await vi.advanceTimersByTimeAsync(2_100);
 

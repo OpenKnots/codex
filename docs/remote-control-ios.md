@@ -100,7 +100,8 @@ The mobile shell now has a local-preview mode for development on the host machin
 - interrupt uses `turn/interrupt` against the active turn when one exists
 - opening a live thread starts one long-lived subscribed app-server connection that resumes the thread, streams thread/item status changes, captures approval server requests, and emits full thread-record snapshots into the Tauri webview
 - command, file-change, and permission approvals now replay over that same subscribed connection so app-server request IDs remain valid
-- the local-preview relay connector polls `read_remote_connector_snapshot` and keeps host/device/session bootstrap data live in the app shell, preserving optimistic client-side revocations until the host-side control plane exists
+- the local-preview relay connector now prefers a native Tauri bootstrap stream that emits `remote-connector-snapshot` events from the host-state files and falls back to polling `read_remote_connector_snapshot` only when that stream is unavailable
+- optimistic client-side revocations are still preserved over both transport paths until the host-side control plane exists
 
 The current local-preview bridge is intentionally scoped to one active live-thread stream in the mobile shell. That keeps the native boundary small and stable while the first-party relay transport is still under development.
 

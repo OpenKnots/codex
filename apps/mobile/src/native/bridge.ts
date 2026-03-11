@@ -41,6 +41,27 @@ export async function readRemoteConnectorSnapshot(): Promise<RelayConnectorSnaps
   }
 }
 
+export async function startRemoteConnectorStream(): Promise<void> {
+  await invokeNative("start_remote_connector_stream");
+}
+
+export async function stopRemoteConnectorStream(): Promise<void> {
+  await invokeNative("stop_remote_connector_stream");
+}
+
+export async function listenRemoteConnectorSnapshots(
+  listener: (payload: RelayConnectorSnapshot) => void,
+): Promise<() => void> {
+  try {
+    return await listenNativeEvent<RelayConnectorSnapshot>(
+      "remote-connector-snapshot",
+      listener,
+    );
+  } catch {
+    return () => {};
+  }
+}
+
 export async function listRemoteThreads(hostId: string): Promise<Thread[] | null> {
   try {
     return await invokeNative<Thread[] | null>("list_remote_threads", { hostId });

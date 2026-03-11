@@ -25,6 +25,6 @@ This package currently ships the five planned screens with a mixed development s
 - bootstrap state comes from either mock data or the local host runtime under `CODEX_HOME/remote/`
 - local preview can browse real host threads and issue `turn/start`, `turn/steer`, and `turn/interrupt` over the UDS app-server socket
 - local preview also maintains one active live thread stream, pushes thread runtime updates into the webview, and replays command, file-change, and permission approvals over the subscribed app-server connection
-- relay/control-plane bootstrap is now subscribed separately, so host lists, device trust state, and session pairing metadata refresh in place without reloading the app shell
+- relay/control-plane bootstrap is now subscribed separately, and local preview prefers a native Tauri bootstrap stream before falling back to polling, so host lists, device trust state, and session pairing metadata refresh in place without reloading the app shell
 
 The app still does not connect to the first-party relay or complete device pairing end to end. Local preview is a host-side developer mode, not the shipped remote transport.

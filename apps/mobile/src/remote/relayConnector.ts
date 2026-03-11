@@ -1,4 +1,9 @@
-import { readRemoteConnectorSnapshot } from "../native/bridge";
+import {
+  listenRemoteConnectorSnapshots,
+  readRemoteConnectorSnapshot,
+  startRemoteConnectorStream,
+  stopRemoteConnectorStream,
+} from "../native/bridge";
 import type {
   DeviceGroup,
   NativeCapabilities,
@@ -74,7 +79,9 @@ export function createLocalPreviewRelayConnector(
   let signedInOverride = false;
   const trustOverrides = new Map<string, "trusted" | "revoked">();
   const listeners = new Set<(bootstrap: RemoteBootstrap) => void>();
+  let nativeUnsubscribe: (() => void) | undefined;
   let pollTimer: ReturnType<typeof setTimeout> | undefined;
+  let subscriptionMode: "idle" | "native" | "polling" = "idle";
   let polling = false;
 
   function overlaySnapshot(nextSnapshot: RelayConnectorSnapshot) {
@@ -96,6 +103,14 @@ export function createLocalPreviewRelayConnector(
         signedIn: nextSnapshot.session.signedIn || signedInOverride,
       },
     };
+  }
+
+  function applySnapshot(nextSnapshot: RelayConnectorSnapshot) {
+    const previousSnapshot = JSON.stringify(currentSnapshot);
+    overlaySnapshot(nextSnapshot);
+    if (JSON.stringify(currentSnapshot) !== previousSnapshot) {
+      emitBootstrap();
+    }
   }
 
   function currentBootstrap(): RemoteBootstrap {
@@ -123,11 +138,7 @@ export function createLocalPreviewRelayConnector(
 
     const nextSnapshot = await readRemoteConnectorSnapshot();
     if (nextSnapshot) {
-      const previousSnapshot = JSON.stringify(currentSnapshot);
-      overlaySnapshot(nextSnapshot);
-      if (JSON.stringify(currentSnapshot) !== previousSnapshot) {
-        emitBootstrap();
-      }
+      applySnapshot(nextSnapshot);
     }
 
     if (polling) {
@@ -141,6 +152,7 @@ export function createLocalPreviewRelayConnector(
     if (polling) {
       return;
     }
+    subscriptionMode = "polling";
     polling = true;
     void pollSnapshot();
   }
@@ -154,6 +166,45 @@ export function createLocalPreviewRelayConnector(
       clearTimeout(pollTimer);
       pollTimer = undefined;
     }
+    if (subscriptionMode === "polling") {
+      subscriptionMode = "idle";
+    }
+  }
+
+  async function startNativeStreaming() {
+    if (subscriptionMode !== "idle" || listeners.size === 0) {
+      return;
+    }
+
+    try {
+      const unsubscribe = await listenRemoteConnectorSnapshots(applySnapshot);
+      if (listeners.size === 0) {
+        unsubscribe();
+        return;
+      }
+      await startRemoteConnectorStream();
+      if (listeners.size === 0) {
+        unsubscribe();
+        void stopRemoteConnectorStream();
+        return;
+      }
+      nativeUnsubscribe = unsubscribe;
+      subscriptionMode = "native";
+    } catch {
+      nativeUnsubscribe?.();
+      nativeUnsubscribe = undefined;
+      startPolling();
+    }
+  }
+
+  function stopNativeStreaming() {
+    if (subscriptionMode !== "native") {
+      return;
+    }
+    nativeUnsubscribe?.();
+    nativeUnsubscribe = undefined;
+    subscriptionMode = "idle";
+    void stopRemoteConnectorStream();
   }
 
   return {
@@ -197,10 +248,13 @@ export function createLocalPreviewRelayConnector(
     subscribe(listener) {
       listeners.add(listener);
       listener(currentBootstrap());
-      startPolling();
+      if (listeners.size === 1) {
+        void startNativeStreaming();
+      }
       return () => {
         listeners.delete(listener);
         if (listeners.size === 0) {
+          stopNativeStreaming();
           stopPolling();
         }
       };

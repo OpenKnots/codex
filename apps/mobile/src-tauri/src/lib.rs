@@ -67,7 +67,7 @@ struct NativeCapabilities {
     relay_sockets: bool,
 }
 
-#[derive(Serialize)]
+#[derive(Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct RemoteConnectorSnapshot {
     connector_mode: &'static str,
@@ -76,7 +76,7 @@ struct RemoteConnectorSnapshot {
     device_groups: Vec<DeviceGroup>,
 }
 
-#[derive(Serialize)]
+#[derive(Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct RemoteSessionSnapshot {
     signed_in: bool,
@@ -86,7 +86,7 @@ struct RemoteSessionSnapshot {
     pairing_url: String,
 }
 
-#[derive(Clone, Serialize)]
+#[derive(Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct HostSummary {
     id: String,
@@ -99,14 +99,14 @@ struct HostSummary {
     last_seen_at: i64,
 }
 
-#[derive(Serialize)]
+#[derive(Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct DeviceGroup {
     host: HostSummary,
     devices: Vec<PairedDevice>,
 }
 
-#[derive(Serialize)]
+#[derive(Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct PairedDevice {
     id: String,
@@ -254,6 +254,20 @@ enum RemoteApprovalDecision {
 #[derive(Default)]
 struct RemoteThreadStreamState {
     current: Mutex<Option<RemoteThreadStreamHandle>>,
+}
+
+#[derive(Default)]
+struct RemoteConnectorStreamState {
+    current: Mutex<Option<RemoteConnectorStreamHandle>>,
+}
+
+struct RemoteConnectorStreamHandle {
+    sender: mpsc::Sender<ConnectorStreamCommand>,
+    join_handle: thread::JoinHandle<()>,
+}
+
+enum ConnectorStreamCommand {
+    Stop,
 }
 
 struct RemoteThreadStreamHandle {
@@ -570,79 +584,79 @@ fn pick_attachment_import() -> Option<String> {
 #[tauri::command]
 fn read_remote_connector_snapshot() -> Option<RemoteConnectorSnapshot> {
     let paths = remote_paths()?;
-    let host: RemoteHostState = read_json_file(&paths.host_path)?;
-    let devices =
-        read_json_file::<RemoteDevicesState>(&paths.devices_path).unwrap_or(RemoteDevicesState {
-            devices: Vec::new(),
-        });
-    let pairing =
-        read_json_file::<RemotePairingState>(&paths.pairing_path).unwrap_or(RemotePairingState {
-            sessions: Vec::new(),
-        });
-    let now = now_unix_seconds()?;
-    let active_pairing = pairing
-        .sessions
-        .into_iter()
-        .filter(|session| {
-            session.used_at.is_none() && session.revoked_at.is_none() && session.expires_at > now
-        })
-        .max_by_key(|session| session.expires_at);
+    load_remote_connector_snapshot(&paths)
+}
 
-    let host_summary = HostSummary {
-        detail: if active_pairing.is_some() {
-            "Local preview from CODEX_HOME/remote with an active pairing session.".to_string()
-        } else {
-            "Local preview from CODEX_HOME/remote without an active pairing session.".to_string()
-        },
-        id: host.host_id.clone(),
-        last_seen_at: host.updated_at,
-        name: host.host_name.clone(),
-        paired_at: host.created_at,
-        platform: platform_label(&host.platform),
-        relay_status: host.relay.status,
-        status: if paths.socket_path.exists() {
-            "online"
-        } else {
-            "offline"
-        },
+#[tauri::command]
+fn start_remote_connector_stream(
+    app: AppHandle,
+    stream_state: State<'_, RemoteConnectorStreamState>,
+) -> Result<(), String> {
+    let Some(paths) = remote_paths() else {
+        return Err("CODEX_HOME is unavailable for local preview.".to_string());
     };
+    let previous_handle = {
+        let mut current = stream_state
+            .current
+            .lock()
+            .map_err(|_| "remote connector stream state is unavailable".to_string())?;
+        if let Some(handle) = current.as_ref()
+            && !handle.join_handle.is_finished()
+        {
+            return Ok(());
+        }
+        current.take()
+    };
+    if let Some(handle) = previous_handle {
+        shutdown_connector_stream(handle)?;
+    }
 
-    Some(RemoteConnectorSnapshot {
-        connector_mode: "localPreview",
-        session: RemoteSessionSnapshot {
-            signed_in: true,
-            account_label: "Local preview".to_string(),
-            pairing_code: active_pairing
-                .as_ref()
-                .map(|session| session.code.clone())
-                .unwrap_or_else(|| "Run codex remote pair".to_string()),
-            pairing_url: active_pairing
-                .as_ref()
-                .map(|session| session.deep_link.clone())
-                .unwrap_or_default(),
-            workspace_label: host.host_name,
-        },
-        hosts: vec![host_summary.clone()],
-        device_groups: vec![DeviceGroup {
-            host: host_summary,
-            devices: devices
-                .devices
-                .into_iter()
-                .map(|device| PairedDevice {
-                    id: device.id,
-                    last_seen_at: device.last_seen_at.unwrap_or(device.paired_at),
-                    name: device.name,
-                    paired_at: device.paired_at,
-                    transport: "Local preview".to_string(),
-                    trust: if device.revoked_at.is_some() {
-                        "revoked"
-                    } else {
-                        "trusted"
-                    },
-                })
-                .collect(),
-        }],
-    })
+    let (sender, receiver) = mpsc::channel();
+    let (ready_sender, ready_receiver) = mpsc::channel();
+    let worker_app = app.clone();
+    let worker_paths = paths.clone();
+    let join_handle = thread::spawn(move || {
+        run_remote_connector_stream(worker_app, worker_paths, receiver, ready_sender);
+    });
+
+    match ready_receiver.recv() {
+        Ok(Ok(())) => {
+            let mut current = stream_state
+                .current
+                .lock()
+                .map_err(|_| "remote connector stream state is unavailable".to_string())?;
+            *current = Some(RemoteConnectorStreamHandle {
+                sender,
+                join_handle,
+            });
+            Ok(())
+        }
+        Ok(Err(err)) => {
+            let _ = join_handle.join();
+            Err(err)
+        }
+        Err(err) => {
+            let _ = join_handle.join();
+            Err(format!("connector stream failed to initialize: {err}"))
+        }
+    }
+}
+
+#[tauri::command]
+fn stop_remote_connector_stream(
+    stream_state: State<'_, RemoteConnectorStreamState>,
+) -> Result<(), String> {
+    let handle = {
+        let mut current = stream_state
+            .current
+            .lock()
+            .map_err(|_| "remote connector stream state is unavailable".to_string())?;
+        current.take()
+    };
+    if let Some(handle) = handle {
+        shutdown_connector_stream(handle)?;
+    }
+    Ok(())
 }
 
 #[tauri::command(rename_all = "camelCase")]
@@ -920,6 +934,51 @@ fn resolve_remote_approval(
     reply_receiver
         .recv()
         .map_err(|_| "The live thread stream did not acknowledge the approval.".to_string())?
+}
+
+fn shutdown_connector_stream(handle: RemoteConnectorStreamHandle) -> Result<(), String> {
+    let _ = handle.sender.send(ConnectorStreamCommand::Stop);
+    handle
+        .join_handle
+        .join()
+        .map_err(|_| "connector stream panicked".to_string())
+}
+
+fn run_remote_connector_stream(
+    app: AppHandle,
+    paths: RemotePaths,
+    receiver: mpsc::Receiver<ConnectorStreamCommand>,
+    ready_sender: mpsc::Sender<Result<(), String>>,
+) {
+    let mut last_snapshot = load_remote_connector_snapshot(&paths);
+    if let Some(snapshot) = last_snapshot.clone()
+        && let Err(err) = emit_remote_connector_snapshot(&app, snapshot)
+    {
+        let _ = ready_sender.send(Err(err));
+        return;
+    }
+    if ready_sender.send(Ok(())).is_err() {
+        return;
+    }
+
+    loop {
+        match receiver.recv_timeout(Duration::from_millis(750)) {
+            Ok(ConnectorStreamCommand::Stop) => return,
+            Err(mpsc::RecvTimeoutError::Disconnected) => return,
+            Err(mpsc::RecvTimeoutError::Timeout) => {}
+        }
+
+        let next_snapshot = load_remote_connector_snapshot(&paths);
+        if next_snapshot == last_snapshot {
+            continue;
+        }
+        last_snapshot = next_snapshot.clone();
+        if let Some(snapshot) = next_snapshot
+            && emit_remote_connector_snapshot(&app, snapshot).is_err()
+        {
+            return;
+        }
+    }
 }
 
 fn shutdown_stream(handle: RemoteThreadStreamHandle) -> Result<(), String> {
@@ -1243,6 +1302,82 @@ fn remote_paths() -> Option<RemotePaths> {
     })
 }
 
+fn load_remote_connector_snapshot(paths: &RemotePaths) -> Option<RemoteConnectorSnapshot> {
+    let host: RemoteHostState = read_json_file(&paths.host_path)?;
+    let devices =
+        read_json_file::<RemoteDevicesState>(&paths.devices_path).unwrap_or(RemoteDevicesState {
+            devices: Vec::new(),
+        });
+    let pairing =
+        read_json_file::<RemotePairingState>(&paths.pairing_path).unwrap_or(RemotePairingState {
+            sessions: Vec::new(),
+        });
+    let now = now_unix_seconds()?;
+    let active_pairing = pairing
+        .sessions
+        .into_iter()
+        .filter(|session| {
+            session.used_at.is_none() && session.revoked_at.is_none() && session.expires_at > now
+        })
+        .max_by_key(|session| session.expires_at);
+
+    let host_summary = HostSummary {
+        detail: if active_pairing.is_some() {
+            "Local preview from CODEX_HOME/remote with an active pairing session.".to_string()
+        } else {
+            "Local preview from CODEX_HOME/remote without an active pairing session.".to_string()
+        },
+        id: host.host_id.clone(),
+        last_seen_at: host.updated_at,
+        name: host.host_name.clone(),
+        paired_at: host.created_at,
+        platform: platform_label(&host.platform),
+        relay_status: host.relay.status,
+        status: if paths.socket_path.exists() {
+            "online"
+        } else {
+            "offline"
+        },
+    };
+
+    Some(RemoteConnectorSnapshot {
+        connector_mode: "localPreview",
+        session: RemoteSessionSnapshot {
+            signed_in: true,
+            account_label: "Local preview".to_string(),
+            pairing_code: active_pairing
+                .as_ref()
+                .map(|session| session.code.clone())
+                .unwrap_or_else(|| "Run codex remote pair".to_string()),
+            pairing_url: active_pairing
+                .as_ref()
+                .map(|session| session.deep_link.clone())
+                .unwrap_or_default(),
+            workspace_label: host.host_name,
+        },
+        hosts: vec![host_summary.clone()],
+        device_groups: vec![DeviceGroup {
+            host: host_summary,
+            devices: devices
+                .devices
+                .into_iter()
+                .map(|device| PairedDevice {
+                    id: device.id,
+                    last_seen_at: device.last_seen_at.unwrap_or(device.paired_at),
+                    name: device.name,
+                    paired_at: device.paired_at,
+                    transport: "Local preview".to_string(),
+                    trust: if device.revoked_at.is_some() {
+                        "revoked"
+                    } else {
+                        "trusted"
+                    },
+                })
+                .collect(),
+        }],
+    })
+}
+
 fn read_json_file<T: for<'de> Deserialize<'de>>(path: &PathBuf) -> Option<T> {
     let contents = fs::read_to_string(path).ok()?;
     serde_json::from_str(&contents).ok()
@@ -1382,6 +1517,14 @@ fn emit_thread_record(app: &AppHandle, event: RemoteThreadRecordEvent) -> Result
         .map_err(|err| format!("failed to emit remote thread record: {err}"))
 }
 
+fn emit_remote_connector_snapshot(
+    app: &AppHandle,
+    snapshot: RemoteConnectorSnapshot,
+) -> Result<(), String> {
+    app.emit("remote-connector-snapshot", snapshot)
+        .map_err(|err| format!("failed to emit remote connector snapshot: {err}"))
+}
+
 fn now_unix_seconds() -> Option<i64> {
     Some(SystemTime::now().duration_since(UNIX_EPOCH).ok()?.as_secs() as i64)
 }
@@ -1481,11 +1624,14 @@ fn status_copy(
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        .manage(RemoteConnectorStreamState::default())
         .manage(RemoteThreadStreamState::default())
         .invoke_handler(tauri::generate_handler![
             read_native_capabilities,
             pick_attachment_import,
             read_remote_connector_snapshot,
+            start_remote_connector_stream,
+            stop_remote_connector_stream,
             list_remote_threads,
             read_remote_thread_record,
             send_remote_prompt,
