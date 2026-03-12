@@ -1290,9 +1290,19 @@ fn resolve_pending_approval(
 }
 
 fn remote_paths() -> Option<RemotePaths> {
+    // On iOS simulator/device, HOME points to sandbox. Try CODEX_HOME first,
+    // then fall back to the well-known macOS host path for local preview,
+    // then the sandbox HOME.
     let codex_home = std::env::var_os("CODEX_HOME")
         .map(PathBuf::from)
-        .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".codex")))?;
+        .or_else(|| {
+            // Check macOS host path (for simulator local preview)
+            let host_path = PathBuf::from("/Users/val/.codex");
+            if host_path.join("remote").join("host.json").exists() {
+                return Some(host_path);
+            }
+            std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".codex"))
+        })?;
     let remote_dir = codex_home.join("remote");
     Some(RemotePaths {
         host_path: remote_dir.join("host.json"),
